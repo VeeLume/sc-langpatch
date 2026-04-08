@@ -70,7 +70,7 @@ src/                  # Svelte frontend
 
 ### The svarog-datacore API
 
-The DCB (`Game2.dcb` inside `Data.p4k`) is Star Citizen's binary database containing all game configuration. The `svarog-datacore` crate (fork at `E:\vscode\rust\svarog`) provides:
+The DCB (`Game2.dcb` inside `Data.p4k`) is Star Citizen's binary database containing all game configuration. The `svarog-datacore` crate provides:
 
 ```rust
 let db = DataCoreDatabase::parse(&dcb_bytes)?;
@@ -146,13 +146,7 @@ let display_name = ini.get(key);                     // Some("Bracer")
 
 ### Step 1: Explore extracted XML files
 
-Extract game files to a local directory for easy browsing:
-
-```
-C:\Games\StarCitizen\Extracted\libs\foundry\records\
-```
-
-The directory structure mirrors the DCB record hierarchy. Key locations:
+Extract game files to a local directory for easy browsing (e.g. using a P4K extraction tool). The directory structure mirrors the DCB record hierarchy. Key locations:
 
 | Data | Location |
 |------|----------|
@@ -269,8 +263,8 @@ Tests cover: patch application correctness, no data loss, TOML module parsing, k
 
 | Crate | Purpose |
 |-------|---------|
-| `svarog-p4k` | P4K archive extraction (path dep: `E:\vscode\rust\svarog`) |
-| `svarog-datacore` | DCB game database parsing (path dep: `E:\vscode\rust\svarog`) |
+| `svarog-p4k` | P4K archive extraction (path dep — see README for setup) |
+| `svarog-datacore` | DCB game database parsing (path dep — see README for setup) |
 | `tauri` + `tauri-specta` | App framework + TS type generation |
 | `specta` + `specta-typescript` | Type-safe Rust↔JS bridge |
 | `encoding_rs` | UTF-16 LE decoding |
@@ -280,7 +274,5 @@ Tests cover: patch application correctness, no data loss, TOML module parsing, k
 
 ## Reference projects
 
-- **svarog fork:** `E:\vscode\rust\svarog` — all extraction crates
-- **sc-damage-calculator:** `E:\vscode\rust\sc-damage-calculator` — reference for DCB extraction patterns (weapons, shields, ships)
-- **streamdeck-starcitizen:** `E:\vscode\streamdeck\streamdeck-starcitizen` — reference for SC install discovery and svarog usage
-- **ScCompLangPackRemix:** `E:\repros\ScCompLangPackRemix` — Python-based fork that derives component data from Game2.dcb
+- **svarog** — the extraction crates for P4K and DataCore (sibling repo, see README for setup)
+- **ScCompLangPackRemix** — Python-based project that derives component data from Game2.dcb (inspiration for this project)

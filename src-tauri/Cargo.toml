@@ -3,6 +3,7 @@ name = "sc-langpatch"
 version = "0.1.0"
 description = "Star Citizen Localization Patcher"
 authors = ["Valerie"]
+license = "MIT"
 edition = "2024"
 
 [lib]
