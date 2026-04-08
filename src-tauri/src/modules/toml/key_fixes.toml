@@ -1,0 +1,20 @@
+[module]
+name = "Key Fixes"
+description = "Fix CIG localization bugs where INI keys are misspelled or use legacy naming"
+priority = 0
+
+# Keys where CIG uses a different naming convention than the DCB references.
+# These renames ensure downstream modules can find and enrich the correct key.
+
+# Shields with non-standard naming: SHLD_S01_CIV/CMP_MANUFACTURER instead of SHLD_MANUFACTURER_S01
+# [[rename]]
+# from = "item_NameSHLD_S01_CIV_SECO_Ink"
+# to = "item_NameSHLD_SECO_S01_INK"
+
+# [[rename]]
+# from = "item_NameSHLD_S01_CMP_YORM_Targa"
+# to = "item_NameSHLD_YORM_S01_Targa"
+
+# NOTE: Renames above are commented out until we verify these keys are actually
+# displayed in-game. If the game renders the old key, renaming it would break
+# the display. Only enable renames for keys confirmed to be unused/legacy.

@@ -1,0 +1,19 @@
+[module]
+name = "Label Fixes"
+description = "Shorten labels that cause text overlap in the game UI"
+
+[[patch]]
+key = "hud_mining_scanning_instability"
+replace = "Instab.:"
+
+[[patch]]
+key = "hud_mining_scanning_resistance"
+replace = "Resist.:"
+
+[[patch]]
+key = "items_commodities_hephaestanite"
+replace = "Heph"
+
+[[patch]]
+key = "items_commodities_hephaestanite_raw"
+replace = "Heph (Raw)"
