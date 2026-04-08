@@ -1,0 +1,38 @@
+# cargo-release configuration
+# Docs: https://github.com/crate-ci/cargo-release/blob/master/docs/reference.md
+
+# Don't publish to crates.io (this is an app, not a library)
+publish = false
+
+# Tag format: v0.1.0
+tag-prefix = "v"
+tag-name = "v{{version}}"
+
+# Commit message for the version bump
+pre-release-commit-message = "release: v{{version}}"
+
+# Push to remote after tagging
+push-remote = "origin"
+
+# ── Version sync: keep Cargo.toml, tauri.conf.json, package.json in lockstep ──
+
+# 1. Stamp the changelog [Unreleased] → [x.y.z] - date
+[[pre-release-replacements]]
+file = "../CHANGELOG.md"
+search = "## \\[Unreleased\\]"
+replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}"
+exactly = 1
+
+# 2. Sync version in tauri.conf.json
+[[pre-release-replacements]]
+file = "tauri.conf.json"
+search = '"version": "[^"]*"'
+replace = '"version": "{{version}}"'
+exactly = 1
+
+# 3. Sync version in package.json (root)
+[[pre-release-replacements]]
+file = "../package.json"
+search = '"version": "[^"]*"'
+replace = '"version": "{{version}}"'
+exactly = 1

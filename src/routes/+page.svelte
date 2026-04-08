@@ -5,6 +5,9 @@
     type ModuleInfo,
     type PatchResult,
   } from "$lib/bindings";
+  import { check } from "@tauri-apps/plugin-updater";
+  import { ask } from "@tauri-apps/plugin-dialog";
+  import { relaunch } from "@tauri-apps/plugin-process";
   import InstallationList from "$lib/InstallationList.svelte";
   import ModuleList from "$lib/ModuleList.svelte";
   import PatchResults from "$lib/PatchResults.svelte";
@@ -16,8 +19,28 @@
   let loading = $state(true);
   let patching = $state(false);
   let error = $state<string | null>(null);
+  let updating = $state(false);
 
   let moduleList = $state<ModuleList>();
+
+  async function checkForUpdates() {
+    try {
+      const update = await check();
+      if (!update?.available) return;
+
+      const yes = await ask(
+        `Version ${update.version} is available. Update now?`,
+        { title: "SC LangPatch Update", kind: "info" }
+      );
+      if (!yes) return;
+
+      updating = true;
+      await update.downloadAndInstall();
+      await relaunch();
+    } catch {
+      // Silently ignore update check failures (offline, etc.)
+    }
+  }
 
   async function init() {
     try {
@@ -70,7 +93,14 @@
   }
 
   init();
+  checkForUpdates();
 </script>
+
+{#if updating}
+  <div class="update-overlay">
+    <p>Installing update...</p>
+  </div>
+{/if}
 
 <main>
   {#if loading}
@@ -180,5 +210,17 @@
 
   .status {
     color: #888;
+  }
+
+  .update-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    color: #e0e0e0;
+    font-size: 1.1rem;
   }
 </style>

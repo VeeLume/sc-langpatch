@@ -1,0 +1,37 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Release: Dry Run (patch)",
+      "detail": "Preview what a patch release would do without changing anything",
+      "type": "shell",
+      "command": "cargo release patch --no-publish",
+      "options": { "cwd": "${workspaceFolder}/src-tauri" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Release: Patch (0.0.x)",
+      "detail": "Bump patch version, update changelog + configs, tag, and push",
+      "type": "shell",
+      "command": "cargo release patch --no-publish --execute",
+      "options": { "cwd": "${workspaceFolder}/src-tauri" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Release: Minor (0.x.0)",
+      "detail": "Bump minor version, update changelog + configs, tag, and push",
+      "type": "shell",
+      "command": "cargo release minor --no-publish --execute",
+      "options": { "cwd": "${workspaceFolder}/src-tauri" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Release: Major (x.0.0)",
+      "detail": "Bump major version, update changelog + configs, tag, and push",
+      "type": "shell",
+      "command": "cargo release major --no-publish --execute",
+      "options": { "cwd": "${workspaceFolder}/src-tauri" },
+      "problemMatcher": []
+    }
+  ]
+}
