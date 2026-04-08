@@ -118,7 +118,7 @@
 </script>
 
 <main>
-  <h1>SC Comp LangPack</h1>
+  <h1>SC LangPatch</h1>
 
   {#if loading}
     <p class="status">Loading...</p>

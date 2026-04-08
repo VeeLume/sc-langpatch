@@ -28,7 +28,7 @@ SC LangPatch reads Star Citizen's `Data.p4k` archive, extracts game data from th
 
 ### svarog dependency
 
-This project depends on the [svarog](https://github.com/valerie/svarog) crates for P4K archive extraction and DataCore parsing. The `Cargo.toml` uses relative path dependencies:
+This project depends on the [svarog](https://github.com/19h/svarog) crates for P4K archive extraction and DataCore parsing. The `Cargo.toml` uses relative path dependencies:
 
 ```toml
 svarog-p4k     = { path = "../../svarog/crates/svarog-p4k" }
