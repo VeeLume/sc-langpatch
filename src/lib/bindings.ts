@@ -19,8 +19,13 @@ async getModules() : Promise<ModuleInfo[]> {
 async setModuleConfig(moduleId: string, config: ModuleConfig) : Promise<void> {
     await TAURI_INVOKE("set_module_config", { moduleId, config });
 },
-async patch(installations: Installation[]) : Promise<PatchResult[]> {
-    return await TAURI_INVOKE("patch", { installations });
+async patch(installations: Installation[]) : Promise<Result<PatchResult[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("patch", { installations }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 

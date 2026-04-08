@@ -93,27 +93,32 @@ pub struct PatchResult {
 
 #[tauri::command]
 #[specta::specta]
-fn patch(
+async fn patch(
     state: tauri::State<'_, Mutex<AppState>>,
     installations: Vec<discovery::Installation>,
-) -> Vec<PatchResult> {
-    let state = state.lock().unwrap();
+) -> Result<Vec<PatchResult>, String> {
+    // Clone what we need so we can drop the lock before the heavy work
+    let configs = state.lock().unwrap().configs.clone();
 
-    installations
-        .iter()
-        .map(|inst| {
-            match patch_installation(inst, &state.configs) {
-                Ok(result) => result,
-                Err(e) => PatchResult {
-                    channel: inst.channel.clone(),
-                    applied: 0,
-                    total: 0,
-                    warnings: Vec::new(),
-                    error: Some(format!("{e:#}")),
-                },
-            }
-        })
-        .collect()
+    tauri::async_runtime::spawn_blocking(move || {
+        installations
+            .iter()
+            .map(|inst| {
+                match patch_installation(inst, &configs) {
+                    Ok(result) => result,
+                    Err(e) => PatchResult {
+                        channel: inst.channel.clone(),
+                        applied: 0,
+                        total: 0,
+                        warnings: Vec::new(),
+                        error: Some(format!("{e:#}")),
+                    },
+                }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| format!("{e:#}"))
 }
 
 // ── Core patching logic ─────────────────────────────────────────────────────
