@@ -94,7 +94,9 @@ impl Module for IllegalGoods {
             if let Some(classes) = record.get_array("controlledSubstanceClasses") {
                 for class_val in classes {
                     let class_inst = match &class_val {
-                        Value::Class(class_ref) => Instance::from_class_ref(db, class_ref),
+                        Value::Class { struct_index, data } => {
+                            Instance::from_inline_data(db, *struct_index, data)
+                        }
                         Value::StrongPointer(Some(r)) => {
                             db.instance(r.struct_index, r.instance_index)
                         }

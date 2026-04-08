@@ -602,7 +602,9 @@ fn extract_damage(parent: &Instance, field_name: &str) -> (f32, f32, f32, f32, f
 
 fn to_instance<'a>(db: &'a DataCoreDatabase, val: &Value<'a>) -> Option<Instance<'a>> {
     match val {
-        Value::Class(cr) => Some(Instance::from_class_ref(db, cr)),
+        Value::Class { struct_index, data } => {
+            Some(Instance::from_inline_data(db, *struct_index, data))
+        }
         Value::StrongPointer(Some(r)) => Some(db.instance(r.struct_index, r.instance_index)),
         _ => None,
     }

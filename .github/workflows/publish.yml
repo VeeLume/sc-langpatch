@@ -11,21 +11,12 @@ jobs:
     timeout-minutes: 60
 
     steps:
-      - name: Checkout sc-langpatch
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          path: sc-langpatch
-
-      - name: Checkout svarog
-        uses: actions/checkout@v4
-        with:
-          repository: VeeLume/svarog
-          path: svarog
 
       - name: Extract changelog
         id: changelog
         shell: bash
-        working-directory: sc-langpatch
         run: |
           # Extract version from tag (v0.1.0 -> 0.1.0)
           VERSION="${GITHUB_REF_NAME#v}"
@@ -62,10 +53,9 @@ jobs:
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
-          workspaces: sc-langpatch/src-tauri -> target
+          workspaces: src-tauri -> target
 
       - name: Install frontend dependencies
-        working-directory: sc-langpatch
         run: pnpm install
 
       - name: Build and release
@@ -75,7 +65,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          projectPath: sc-langpatch
+          projectPath: .
           tagName: ${{ github.ref_name }}
           releaseName: "SC LangPatch ${{ github.ref_name }}"
           releaseBody: ${{ steps.changelog.outputs.body }}

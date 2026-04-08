@@ -31,8 +31,8 @@ regex         = "1"
 toml          = "0.8"
 dirs          = "6"
 glob-match    = "0.2"
-svarog-p4k    = { path = "../../svarog/crates/svarog-p4k" }
-svarog-datacore = { path = "../../svarog/crates/svarog-datacore" }
+svarog-p4k      = { git = "https://github.com/VeeLume/svarog.git", branch = "bulkhead-fixes" }
+svarog-datacore = { git = "https://github.com/VeeLume/svarog.git", branch = "bulkhead-fixes" }
 
 [profile.release]
 opt-level     = 3
