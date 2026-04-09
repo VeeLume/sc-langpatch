@@ -432,11 +432,14 @@ fn format_group(group: &SpawnGroup, default_role: &str) -> String {
         return String::new();
     };
 
-    if total_count > 1 {
-        format!("{label}: ~{total_count}x {ships_str}")
+    let count_str = if total_count > 1 {
+        format!(" ~{total_count}x")
     } else {
-        format!("{label}: {ships_str}")
-    }
+        String::new()
+    };
+    // Short lists stay on the same line; long lists wrap to a new line
+    let sep = if collapsed.len() > 5 { "\\n" } else { " " };
+    format!("<EM4>{label}:{count_str}</EM4>{sep}{ships_str}")
 }
 
 /// Strip manufacturer prefix from ship display name.
@@ -496,7 +499,7 @@ fn extract_all_tiers(db: &DataCoreDatabase, ini: &HashMap<String, String>) -> Ve
     // Pre-build indexes
     let pool_items = build_pool_items_map(db, ini);
     let tag_names = build_tag_name_map(db);
-    let ship_index = build_ship_tag_index(db, ini, &tag_names);
+    let (ship_index, ship_tags) = build_ship_tag_index(db, ini, &tag_names);
 
     let mut tiers = Vec::new();
     let mut contract_count = 0;
@@ -524,7 +527,7 @@ fn extract_all_tiers(db: &DataCoreDatabase, ini: &HashMap<String, String>) -> Ve
             }
 
             // Extract handler-level ship spawns from contractParams
-            let handler_spawns = extract_spawns_from_params(db, &handler, &tag_names, &ship_index);
+            let handler_spawns = extract_spawns_from_params(db, &handler, &tag_names, &ship_index, &ship_tags);
 
             // Walk both regular contracts and intro contracts
             for array_name in ["contracts", "introContracts"] {
@@ -540,7 +543,7 @@ fn extract_all_tiers(db: &DataCoreDatabase, ini: &HashMap<String, String>) -> Ve
 
                     extract_contract_tier(
                         db, &contract, &avail, &handler_spawns, &pool_items,
-                        &tag_names, &ship_index, &mut tiers,
+                        &tag_names, &ship_index, &ship_tags, &mut tiers,
                     );
 
                     // CareerContract has subContracts — walk those too
@@ -551,7 +554,7 @@ fn extract_all_tiers(db: &DataCoreDatabase, ini: &HashMap<String, String>) -> Ve
                             };
                             extract_contract_tier(
                                 db, &sub, &avail, &handler_spawns, &pool_items,
-                                &tag_names, &ship_index, &mut tiers,
+                                &tag_names, &ship_index, &ship_tags, &mut tiers,
                             );
                         }
                     }
@@ -607,6 +610,7 @@ fn extract_contract_tier(
     pool_items: &HashMap<String, Vec<String>>,
     tag_names: &HashMap<String, String>,
     ship_index: &[ShipEntity],
+    ship_tags: &HashSet<String>,
     out: &mut Vec<MissionTier>,
 ) {
     let mut tier = MissionTier {
@@ -640,7 +644,7 @@ fn extract_contract_tier(
     }
 
     // Extract ship spawns — contract-level overrides take precedence over handler
-    let contract_spawns = extract_spawns_from_contract(db, contract, tag_names, ship_index);
+    let contract_spawns = extract_spawns_from_contract(db, contract, tag_names, ship_index, ship_tags);
     if !contract_spawns.hostile.is_empty() || !contract_spawns.allied.is_empty() {
         tier.hostile_spawns = contract_spawns.hostile;
         tier.allied_spawns = contract_spawns.allied;
@@ -934,12 +938,15 @@ fn build_tag_name_map(db: &DataCoreDatabase) -> HashMap<String, String> {
 }
 
 /// Build an index of AI ship entities with their tags and display names.
+/// Also returns the union of all tags found across ship entities, used to
+/// identify which spawn-option tags are ship-selection-relevant.
 fn build_ship_tag_index(
     db: &DataCoreDatabase,
     ini: &HashMap<String, String>,
     tag_names: &HashMap<String, String>,
-) -> Vec<ShipEntity> {
+) -> (Vec<ShipEntity>, HashSet<String>) {
     let mut ships = Vec::new();
+    let mut all_ship_tags = HashSet::new();
 
     for record in db.records_by_type_containing("EntityClassDefinition") {
         let rec_name = record.name().unwrap_or("");
@@ -970,6 +977,7 @@ fn build_ship_tag_index(
         // Extract vehicle size from SAttachableComponentParams
         let size = get_entity_size(db, &inst);
 
+        all_ship_tags.extend(entity_tags.iter().cloned());
         ships.push(ShipEntity {
             display_name,
             tags: entity_tags,
@@ -977,7 +985,7 @@ fn build_ship_tag_index(
         });
     }
 
-    ships
+    (ships, all_ship_tags)
 }
 
 /// Resolve a spawn tag query against the ship index.
@@ -1030,13 +1038,7 @@ const DIFFICULTY_TAGS: &[&str] = &[
     "VeryEasy", "Easy", "Medium", "Hard", "VeryHard", "Super",
 ];
 
-/// Tags that select ship faction/affiliation.
-const FACTION_TAGS: &[&str] = &[
-    "Criminal", "Civilians", "UEE_Navy", "Ninetails", "PrivateSecurity",
-    "CitizensForProsperity", "HeadHunters", "XenoThreat", "Vanduul",
-];
-
-/// Tags that select ship class/role.
+/// Tags that select ship class/role (used for display categorization only).
 const CLASS_TAGS: &[&str] = &[
     "Light_Fighter", "Medium_Fighter", "Heavy_Fighter", "Gun_Boat",
     "LightInterceptor", "Medium_Interceptor", "HeavyFighter",
@@ -1050,31 +1052,13 @@ fn is_ai_skill_tag(tag: &str) -> bool {
     tag.starts_with("HumanPilot") || tag == "AcePilot"
 }
 
-/// All known selection tags (exist on ship entity files).
-fn is_selection_tag(tag: &str) -> bool {
-    DIFFICULTY_TAGS.contains(&tag) || FACTION_TAGS.contains(&tag) || CLASS_TAGS.contains(&tag)
-}
-
-/// Filter a tag set to only include tags that are selection-relevant.
-fn filter_selection_tags(tags: &HashSet<String>) -> HashSet<String> {
-    tags.iter()
-        .filter(|t| is_selection_tag(t))
-        .cloned()
-        .collect()
-}
-
-/// Check if a tag set has enough specificity to produce a meaningful ship list.
-/// Requires at least one difficulty OR faction tag.
-fn has_specific_selection(tags: &HashSet<String>) -> bool {
-    tags.iter().any(|t| DIFFICULTY_TAGS.contains(&t.as_str()) || FACTION_TAGS.contains(&t.as_str()))
-}
-
 /// Extract spawn groups from a MissionPropertyValue_ShipSpawnDescriptions instance.
 fn extract_spawn_groups_from_value(
     db: &DataCoreDatabase,
     value: &Instance,
     tag_names: &HashMap<String, String>,
     ship_index: &[ShipEntity],
+    ship_tags: &HashSet<String>,
 ) -> Vec<SpawnGroup> {
     let mut groups = Vec::new();
     let Some(descs) = value.get_array("spawnDescriptions") else {
@@ -1134,10 +1118,15 @@ fn extract_spawn_groups_from_value(
                     }
                 }
 
-                // Resolve ships
-                let selection_positive = filter_selection_tags(&positive);
-                if has_specific_selection(&selection_positive) {
-                    let matches = resolve_spawn_query(&selection_positive, &negative, ship_index);
+                // Resolve ships — keep only tags that exist on ship entities
+                // (this naturally excludes AI skill tags and other non-ship tags)
+                let match_positive: HashSet<String> = positive
+                    .iter()
+                    .filter(|t| ship_tags.contains(t.as_str()))
+                    .cloned()
+                    .collect();
+                if !match_positive.is_empty() {
+                    let matches = resolve_spawn_query(&match_positive, &negative, ship_index);
                     for entry in matches {
                         if !all_ships.iter().any(|(n, _)| n == &entry.0) {
                             all_ships.push(entry);
@@ -1192,12 +1181,13 @@ fn extract_spawns_from_contract(
     contract: &Instance,
     tag_names: &HashMap<String, String>,
     ship_index: &[ShipEntity],
+    ship_tags: &HashSet<String>,
 ) -> HandlerSpawns {
     let mut result = HandlerSpawns::default();
 
     // Check paramOverrides.propertyOverrides
     if let Some(po) = contract.get_instance("paramOverrides") {
-        extract_spawns_from_property_overrides(db, &po, tag_names, ship_index, &mut result);
+        extract_spawns_from_property_overrides(db, &po, tag_names, ship_index, ship_tags, &mut result);
     }
 
     // Also check template's contractProperties as fallback
@@ -1216,7 +1206,7 @@ fn extract_spawns_from_contract(
             if let Some(ti) = template_inst {
                 if let Some(cp) = ti.get_array("contractProperties") {
                     extract_spawns_from_mission_properties(
-                        db, cp, tag_names, ship_index, &mut result,
+                        db, cp, tag_names, ship_index, ship_tags, &mut result,
                     );
                 }
             }
@@ -1232,11 +1222,12 @@ fn extract_spawns_from_params(
     handler: &Instance,
     tag_names: &HashMap<String, String>,
     ship_index: &[ShipEntity],
+    ship_tags: &HashSet<String>,
 ) -> HandlerSpawns {
     let mut result = HandlerSpawns::default();
 
     if let Some(cp) = handler.get_instance("contractParams") {
-        extract_spawns_from_property_overrides(db, &cp, tag_names, ship_index, &mut result);
+        extract_spawns_from_property_overrides(db, &cp, tag_names, ship_index, ship_tags, &mut result);
     }
 
     result
@@ -1248,6 +1239,7 @@ fn extract_spawns_from_property_overrides(
     parent: &Instance,
     tag_names: &HashMap<String, String>,
     ship_index: &[ShipEntity],
+    ship_tags: &HashSet<String>,
     result: &mut HandlerSpawns,
 ) {
     let Some(overrides) = parent.get_array("propertyOverrides") else {
@@ -1267,7 +1259,7 @@ fn extract_spawns_from_property_overrides(
         let Some(role) = classify_spawn_variable(var_name) else {
             // If can't classify, treat as hostile (bounty targets, etc.)
             let Some(val) = prop.get_instance("value") else { continue };
-            let groups = extract_spawn_groups_from_value(db, &val, tag_names, ship_index);
+            let groups = extract_spawn_groups_from_value(db, &val, tag_names, ship_index, ship_tags);
             if !groups.is_empty() {
                 result.hostile.extend(groups);
             }
@@ -1277,7 +1269,7 @@ fn extract_spawns_from_property_overrides(
         let Some(val) = prop.get_instance("value") else {
             continue;
         };
-        let groups = extract_spawn_groups_from_value(db, &val, tag_names, ship_index);
+        let groups = extract_spawn_groups_from_value(db, &val, tag_names, ship_index, ship_tags);
         match role {
             SpawnRole::Hostile => result.hostile.extend(groups),
             SpawnRole::Allied => result.allied.extend(groups),
@@ -1291,6 +1283,7 @@ fn extract_spawns_from_mission_properties<'a>(
     props: impl Iterator<Item = Value<'a>>,
     tag_names: &HashMap<String, String>,
     ship_index: &[ShipEntity],
+    ship_tags: &HashSet<String>,
     result: &mut HandlerSpawns,
 ) {
     for cpv in props {
@@ -1307,7 +1300,7 @@ fn extract_spawns_from_mission_properties<'a>(
         let Some(val) = prop.get_instance("value") else {
             continue;
         };
-        let groups = extract_spawn_groups_from_value(db, &val, tag_names, ship_index);
+        let groups = extract_spawn_groups_from_value(db, &val, tag_names, ship_index, ship_tags);
         if groups.is_empty() {
             continue;
         }
