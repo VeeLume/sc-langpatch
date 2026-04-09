@@ -26,6 +26,14 @@ async patch(installations: Installation[]) : Promise<Result<PatchResult[], strin
     if(e instanceof Error) throw e;
     else return { status: "error", error: e  as any };
 }
+},
+async removePatch(installations: Installation[]) : Promise<Result<RemoveResult[], string>> {
+    try {
+    return { status: "ok", data: await TAURI_INVOKE("remove_patch", { installations }) };
+} catch (e) {
+    if(e instanceof Error) throw e;
+    else return { status: "error", error: e  as any };
+}
 }
 }
 
@@ -86,6 +94,7 @@ export type OptionKind = { type: "Bool" } | { type: "String" } | { type: "Choice
  */
 export type OptionValue = { type: "Bool"; value: boolean } | { type: "String"; value: string } | { type: "Choice"; value: string }
 export type PatchResult = { channel: string; applied: number; total: number; warnings: string[]; error: string | null }
+export type RemoveResult = { channel: string; removed: boolean; error: string | null }
 
 /** tauri-specta globals **/
 

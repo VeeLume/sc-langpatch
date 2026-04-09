@@ -21,22 +21,6 @@ pub fn builtin_modules() -> Vec<Box<dyn Module>> {
         "label_fixes",
         include_str!("toml/label_fixes.toml"),
     )));
-    modules.push(Box::new(toml_module::TomlModule::from_embedded(
-        "drug_markers",
-        include_str!("toml/drug_markers.toml"),
-    )));
-    modules.push(Box::new(toml_module::TomlModule::from_embedded(
-        "blueprint_markers",
-        include_str!("toml/blueprint_markers.toml"),
-    )));
-    modules.push(Box::new(toml_module::TomlModule::from_embedded(
-        "blueprint_rewards",
-        include_str!("toml/blueprint_rewards.toml"),
-    )));
-    modules.push(Box::new(toml_module::TomlModule::from_embedded(
-        "component_grades",
-        include_str!("toml/component_grades.toml"),
-    )));
 
     // Code-derived modules
     modules.push(Box::new(component_grades::ComponentGrades));

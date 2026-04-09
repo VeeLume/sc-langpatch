@@ -196,15 +196,12 @@ impl Module for WeaponEnhancer {
                     lines.push(format!("Projectile Speed: {:.0} m/s", w.projectile_speed));
                 }
 
+                // Ballistic weapons have maxAmmoCount (total ammo pool)
+                // Energy weapons have maxAmmoLoad (capacitor)
                 if w.mag_size > 0 {
-                    lines.push(format!("Mag Size: {}", w.mag_size));
+                    lines.push(format!("Ammo: {}", w.mag_size));
                 }
-
-                // Energy weapons use capacitor (max_ammo_load), ballistics use mag_size
-                // Show total ammo for ballistic weapons that have a magazine
-                if w.mag_size > 0 && w.max_ammo_load > 0.0 {
-                    lines.push(format!("Total Ammo: {:.0}", w.max_ammo_load));
-                } else if w.max_ammo_load > 0.0 && w.mag_size == 0 {
+                if w.max_ammo_load > 0.0 {
                     lines.push(format!("Capacitor: {:.0}", w.max_ammo_load));
                 }
 
@@ -605,7 +602,9 @@ fn to_instance<'a>(db: &'a DataCoreDatabase, val: &Value<'a>) -> Option<Instance
         Value::Class { struct_index, data } => {
             Some(Instance::from_inline_data(db, *struct_index, data))
         }
-        Value::StrongPointer(Some(r)) => Some(db.instance(r.struct_index, r.instance_index)),
+        Value::StrongPointer(Some(r)) | Value::ClassRef(r) => {
+            Some(db.instance(r.struct_index, r.instance_index))
+        }
         _ => None,
     }
 }

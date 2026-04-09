@@ -80,6 +80,29 @@ pub fn output_dir(install_path: &Path) -> PathBuf {
         .join("english")
 }
 
+/// The directory where debug diff files are written.
+pub fn debug_dir() -> Option<PathBuf> {
+    dirs::data_local_dir().map(|d| d.join("sc-langpatch").join("debug"))
+}
+
+/// Read the game version string from `build_manifest.id` in the install directory.
+///
+/// Returns the version in launcher-visible format, e.g. `"4.7.1-live.11592622"`,
+/// constructed from `Branch` (strips `sc-alpha-` prefix), the channel name, and
+/// `RequestedP4ChangeNum`. Returns `None` if the file is missing or malformed.
+pub fn game_version(install_path: &Path, channel: &str) -> Option<String> {
+    let content = std::fs::read_to_string(install_path.join("build_manifest.id")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+    let data = &json["Data"];
+
+    let branch = data["Branch"].as_str()?;
+    let version = branch.strip_prefix("sc-alpha-").unwrap_or(branch);
+    let cl = data["RequestedP4ChangeNum"].as_str()?;
+    let channel_lower = channel.to_lowercase();
+
+    Some(format!("{version}-{channel_lower}.{cl}"))
+}
+
 fn launcher_log_path() -> PathBuf {
     let appdata = std::env::var("APPDATA").unwrap_or_default();
     PathBuf::from(appdata).join("rsilauncher/logs/log.log")

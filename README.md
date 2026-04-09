@@ -15,9 +15,6 @@ SC LangPatch reads Star Citizen's `Data.p4k` archive, extracts game data from th
 | Mission Enhancer | Adds blueprint rewards, reputation, and cooldowns to mission descriptions |
 | Label Fixes | Shortens HUD abbreviations and commodity names |
 | Key Fixes | Corrects misspelled INI keys |
-| Blueprint Markers | Tags blueprint titles |
-| Blueprint Rewards | Lists blueprint rewards in descriptions |
-| Drug Markers | Prefixes drug names |
 
 ## Prerequisites
 
@@ -25,10 +22,6 @@ SC LangPatch reads Star Citizen's `Data.p4k` archive, extracts game data from th
 - [pnpm](https://pnpm.io/)
 - [Rust](https://rustup.rs/) (stable, 2024 edition)
 - Star Citizen installed (the app auto-detects installations from the RSI Launcher log)
-
-### svarog dependency
-
-This project depends on a [fork of svarog](https://github.com/VeeLume/svarog/tree/bulkhead-fixes) for P4K archive extraction and DataCore parsing. The dependencies are fetched automatically from GitHub via git deps in `Cargo.toml`.
 
 ## Build & Run
 
@@ -62,6 +55,10 @@ Modules implement a `Module` trait and produce key-value patch operations. There
 
 - **Code modules** -- query the DataCore database at runtime to derive patches dynamically
 - **TOML modules** -- static patches defined in embedded TOML files, supporting key patterns and template captures
+
+## Acknowledgments
+
+This project was inspired by [ScCompLangPack](https://github.com/ExoAE/ScCompLangPack) by ExoAE
 
 ## License
 

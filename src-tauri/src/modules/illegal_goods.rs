@@ -97,7 +97,7 @@ impl Module for IllegalGoods {
                         Value::Class { struct_index, data } => {
                             Instance::from_inline_data(db, *struct_index, data)
                         }
-                        Value::StrongPointer(Some(r)) => {
+                        Value::StrongPointer(Some(r)) | Value::ClassRef(r) => {
                             db.instance(r.struct_index, r.instance_index)
                         }
                         _ => continue,

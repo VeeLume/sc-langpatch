@@ -107,6 +107,63 @@ pub fn decode_ini(bytes: &[u8]) -> Result<String> {
     Ok(s.strip_prefix('\u{FEFF}').unwrap_or(&s).to_owned())
 }
 
+/// Write debug diff files containing only the patched lines.
+///
+/// Two files are written to `debug_dir`:
+///   - `global_{version}_{options_hash}_{timestamp}.ini`          — original values
+///   - `global_{version}_{options_hash}_{timestamp}_modified.ini` — patched values
+///
+/// Lines appear in INI file order. The filenames are deterministic given
+/// the same game version and module options.
+pub fn write_diff(
+    debug_dir: &Path,
+    version: &str,
+    options_hash: &str,
+    ini_content: &str,
+    patches: &HashMap<String, PatchOp>,
+) -> Result<()> {
+    let mut original = String::new();
+    let mut modified = String::new();
+
+    for line in ini_content.lines() {
+        if let Some(eq_pos) = line.find('=') {
+            let key = &line[..eq_pos];
+            if let Some(op) = patches.get(key) {
+                let original_value = &line[eq_pos + 1..];
+                let new_value = match op {
+                    PatchOp::Replace(v) => v.clone(),
+                    PatchOp::Prefix(p) => format!("{p}{original_value}"),
+                    PatchOp::Suffix(s) => format!("{original_value}{s}"),
+                };
+                original.push_str(key);
+                original.push('=');
+                original.push_str(original_value);
+                original.push('\n');
+                modified.push_str(key);
+                modified.push('=');
+                modified.push_str(&new_value);
+                modified.push('\n');
+            }
+        }
+    }
+
+    std::fs::create_dir_all(debug_dir)
+        .with_context(|| format!("Failed to create {}", debug_dir.display()))?;
+
+    let base = format!("global_{version}_{options_hash}_{}", chrono::Utc::now().format("%Y%m%d%H%M%S"));
+    let orig_path = debug_dir.join(format!("{base}.ini"));
+    let mod_path = debug_dir.join(format!("{base}_modified.ini"));
+
+    std::fs::write(&orig_path, original.as_bytes())
+        .with_context(|| format!("Failed to write {}", orig_path.display()))?;
+    std::fs::write(&mod_path, modified.as_bytes())
+        .with_context(|| format!("Failed to write {}", mod_path.display()))?;
+
+    eprintln!("  Written diff: {}", orig_path.display());
+    eprintln!("  Written diff: {}", mod_path.display());
+    Ok(())
+}
+
 /// Write the patched global.ini and user.cfg to the output directory.
 pub fn write_output(output_dir: &Path, content: &str) -> Result<()> {
     std::fs::create_dir_all(output_dir)
@@ -119,20 +176,110 @@ pub fn write_output(output_dir: &Path, content: &str) -> Result<()> {
     std::fs::write(&ini_path, &bom_content)
         .with_context(|| format!("Failed to write {}", ini_path.display()))?;
 
-    // Write user.cfg next to the data/ directory
+    // Upsert g_language = english in user.cfg next to the data/ directory
     if let Some(install_dir) = output_dir
         .parent()
         .and_then(|p| p.parent())
         .and_then(|p| p.parent())
     {
         let cfg_path = install_dir.join("user.cfg");
-        if !cfg_path.exists() {
-            std::fs::write(&cfg_path, "g_language = english\n")
+        let existing = if cfg_path.exists() {
+            std::fs::read_to_string(&cfg_path)
+                .with_context(|| format!("Failed to read {}", cfg_path.display()))?
+        } else {
+            String::new()
+        };
+        let updated = upsert_cfg_key(&existing, "g_language", "english");
+        if updated != existing {
+            std::fs::write(&cfg_path, &updated)
                 .with_context(|| format!("Failed to write {}", cfg_path.display()))?;
-            eprintln!("  Created {}", cfg_path.display());
+            eprintln!("  Updated {}", cfg_path.display());
         }
     }
 
     eprintln!("  Written {}", ini_path.display());
     Ok(())
+}
+
+/// Remove the patched global.ini and clean up user.cfg.
+///
+/// Returns `true` if the file existed and was removed.
+pub fn remove_output(output_dir: &Path) -> Result<bool> {
+    let ini_path = output_dir.join("global.ini");
+    if !ini_path.exists() {
+        return Ok(false);
+    }
+
+    std::fs::remove_file(&ini_path)
+        .with_context(|| format!("Failed to remove {}", ini_path.display()))?;
+    eprintln!("  Removed {}", ini_path.display());
+
+    // Remove g_language = english from user.cfg if present
+    if let Some(install_dir) = output_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+    {
+        let cfg_path = install_dir.join("user.cfg");
+        if cfg_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&cfg_path) {
+                let cleaned = remove_cfg_key(&content, "g_language");
+                if cleaned.trim().is_empty() {
+                    let _ = std::fs::remove_file(&cfg_path);
+                    eprintln!("  Removed {}", cfg_path.display());
+                } else if cleaned != content {
+                    let _ = std::fs::write(&cfg_path, &cleaned);
+                    eprintln!("  Cleaned {}", cfg_path.display());
+                }
+            }
+        }
+    }
+
+    Ok(true)
+}
+
+/// Insert or update a `key = value` line in a user.cfg-style file.
+fn upsert_cfg_key(content: &str, key: &str, value: &str) -> String {
+    let target = format!("{key} = {value}");
+    let mut found = false;
+    let mut lines: Vec<String> = content
+        .lines()
+        .map(|l| {
+            let stripped = l.trim();
+            if stripped.starts_with(key) && stripped[key.len()..].trim_start().starts_with('=') {
+                found = true;
+                target.clone()
+            } else {
+                l.to_string()
+            }
+        })
+        .collect();
+
+    if !found {
+        lines.push(target);
+    }
+
+    let mut result = lines.join("\n");
+    if !result.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
+/// Remove all lines setting a given key from a user.cfg-style file.
+fn remove_cfg_key(content: &str, key: &str) -> String {
+    let lines: Vec<&str> = content
+        .lines()
+        .filter(|l| {
+            let stripped = l.trim();
+            !(stripped.starts_with(key) && stripped[key.len()..].trim_start().starts_with('='))
+        })
+        .collect();
+
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut result = lines.join("\n");
+    result.push('\n');
+    result
 }

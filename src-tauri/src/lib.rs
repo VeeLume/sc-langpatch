@@ -91,6 +91,13 @@ pub struct PatchResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Type)]
+pub struct RemoveResult {
+    pub channel: String,
+    pub removed: bool,
+    pub error: Option<String>,
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn patch(
@@ -111,6 +118,36 @@ async fn patch(
                         applied: 0,
                         total: 0,
                         warnings: Vec::new(),
+                        error: Some(format!("{e:#}")),
+                    },
+                }
+            })
+            .collect()
+    })
+    .await
+    .map_err(|e| format!("{e:#}"))
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn remove_patch(
+    installations: Vec<discovery::Installation>,
+) -> Result<Vec<RemoveResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        installations
+            .iter()
+            .map(|inst| {
+                let install_path = Path::new(&inst.path);
+                let output_dir = discovery::output_dir(install_path);
+                match merge::remove_output(&output_dir) {
+                    Ok(removed) => RemoveResult {
+                        channel: inst.channel.clone(),
+                        removed,
+                        error: None,
+                    },
+                    Err(e) => RemoveResult {
+                        channel: inst.channel.clone(),
+                        removed: false,
                         error: Some(format!("{e:#}")),
                     },
                 }
@@ -230,6 +267,15 @@ fn patch_installation(
     let output_dir = discovery::output_dir(install_path);
     merge::write_output(&output_dir, &patched)?;
 
+    // Write debug diff files to %LOCALAPPDATA%\sc-langpatch\debug\
+    #[cfg(debug_assertions)]
+    if let Some(debug_dir) = discovery::debug_dir() {
+        let version = discovery::game_version(install_path, &inst.channel)
+            .unwrap_or_else(|| inst.channel.to_lowercase());
+        let hash = options_hash(configs);
+        let _ = merge::write_diff(&debug_dir, &version, &hash, &ini_content, &merged_patches);
+    }
+
     Ok(PatchResult {
         channel: inst.channel.clone(),
         applied,
@@ -265,6 +311,24 @@ fn extract_datacore(
     DataCoreDatabase::parse(&bytes).ok()
 }
 
+/// Produce a short deterministic hex hash of the active module configs.
+///
+/// The hash changes whenever any module is enabled/disabled or its options
+/// change, making it suitable for use in debug diff filenames.
+fn options_hash(configs: &HashMap<String, ModuleConfig>) -> String {
+    // Serialize to a sorted, stable JSON string and run FNV-1a over it.
+    let mut sorted: Vec<_> = configs.iter().collect();
+    sorted.sort_by_key(|(k, _)| k.as_str());
+    let serialized = serde_json::to_string(&sorted).unwrap_or_default();
+
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in serialized.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{:08x}", hash as u32)
+}
+
 fn count_applied(ini_content: &str, patches: &HashMap<String, PatchOp>) -> usize {
     let mut count = 0;
     for line in ini_content.lines() {
@@ -287,6 +351,7 @@ pub fn run() {
         get_modules,
         set_module_config,
         patch,
+        remove_patch,
     ]);
 
     #[cfg(debug_assertions)]

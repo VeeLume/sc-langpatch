@@ -65,6 +65,10 @@ impl Module for ComponentGrades {
                         value: "compact_prefix".into(),
                         label: "Compact Prefix (e.g. M1C Bracer)".into(),
                     },
+                    ChoiceOption {
+                        value: "short_prefix".into(),
+                        label: "Short Prefix (e.g. MIL1C Bracer)".into(),
+                    },
                 ],
             },
             default: "name_class_grade".into(),
@@ -88,7 +92,9 @@ impl Module for ComponentGrades {
 
             for component in components {
                 let inst = match &component {
-                    Value::StrongPointer(Some(r)) => db.instance(r.struct_index, r.instance_index),
+                    Value::StrongPointer(Some(r)) | Value::ClassRef(r) => {
+                        db.instance(r.struct_index, r.instance_index)
+                    }
                     _ => continue,
                 };
 
@@ -154,6 +160,18 @@ impl Module for ComponentGrades {
                         };
                         let size = attach_def.get_i32("Size").unwrap_or(0);
                         format!("{class_code}{size}{grade_str} {display_name}")
+                    }
+                    "short_prefix" => {
+                        let class_abbr = match class {
+                            "Military" => "MIL",
+                            "Civilian" => "CIV",
+                            "Industrial" => "IND",
+                            "Stealth" => "STL",
+                            "Competition" => "CMP",
+                            _ => "???",
+                        };
+                        let size = attach_def.get_i32("Size").unwrap_or(0);
+                        format!("{class_abbr}{size}{grade_str} {display_name}")
                     }
                     _ => {
                         format!("{display_name} {class} {grade_str}")
