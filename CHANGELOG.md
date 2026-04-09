@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Ship encounter pools now match game data accurately — replaced hardcoded tag lists with dynamically collected tags from ship entities, fixing overly broad matching that included capital ships (Idris, Polaris, 890 Jump) in fighter-class missions
+
+### Changed
+- Ship encounter group labels are now highlighted (EM4 markup) for better readability
+- Long ship lists wrap to a new line below the label instead of running inline
+
 ## [0.2.1] - 2026-04-09
 
 ### Added
