@@ -111,11 +111,17 @@ mod patch_application {
     }
 
     #[test]
-    fn last_patch_wins_on_key_conflict() {
-        // When building the HashMap, last insert wins
-        let mut patches: HashMap<String, PatchOp> = HashMap::new();
-        patches.insert("key".into(), PatchOp::Replace("First".into()));
-        patches.insert("key".into(), PatchOp::Replace("Second".into()));
+    fn last_replace_wins_on_key_conflict() {
+        // Stacked Replaces apply in order — the final Replace wipes any
+        // prior Replace on the same key.
+        let mut patches: HashMap<String, Vec<PatchOp>> = HashMap::new();
+        patches.insert(
+            "key".into(),
+            vec![
+                PatchOp::Replace("First".into()),
+                PatchOp::Replace("Second".into()),
+            ],
+        );
 
         let ini = make_ini(&[("key", "Original")]);
         let patched = merge::apply_patches(&ini, &patches);
@@ -163,7 +169,7 @@ mod toml_module {
         "#;
         let module = TomlModule::from_embedded("test", toml);
         let ini_map = merge::parse_ini("item_Name=Old Name\nother=Untouched\n");
-        let ctx = ModuleContext { db: None, ini: &ini_map, config: &ModuleConfig::default() };
+        let ctx = ModuleContext { db: None, datacore: None, locale: None, ini: &ini_map, config: &ModuleConfig::default() };
 
         let patches = module.generate_patches(&ctx).unwrap();
         assert_eq!(patches.len(), 1);
@@ -181,7 +187,7 @@ mod toml_module {
         "#;
         let module = TomlModule::from_embedded("test", toml);
         let ini_map = merge::parse_ini("a=Alpha\nb=Beta\nc=Charlie\nd=Delta\n");
-        let ctx = ModuleContext { db: None, ini: &ini_map, config: &ModuleConfig::default() };
+        let ctx = ModuleContext { db: None, datacore: None, locale: None, ini: &ini_map, config: &ModuleConfig::default() };
 
         let patches = module.generate_patches(&ctx).unwrap();
         assert_eq!(patches.len(), 3);
@@ -205,7 +211,7 @@ mod toml_module {
              item_NameWEAP_Cannon=Cannon\n\
              unrelated=Foo\n",
         );
-        let ctx = ModuleContext { db: None, ini: &ini_map, config: &ModuleConfig::default() };
+        let ctx = ModuleContext { db: None, datacore: None, locale: None, ini: &ini_map, config: &ModuleConfig::default() };
 
         let patches = module.generate_patches(&ctx).unwrap();
         // Should match Laser and Fan (both end with _SCItem), NOT Cannon or unrelated
@@ -230,7 +236,7 @@ mod toml_module {
              item_NamePOWR_AMRS_S03_Turbo=Turbo\n\
              no_match=Foo\n",
         );
-        let ctx = ModuleContext { db: None, ini: &ini_map, config: &ModuleConfig::default() };
+        let ctx = ModuleContext { db: None, datacore: None, locale: None, ini: &ini_map, config: &ModuleConfig::default() };
 
         let patches = module.generate_patches(&ctx).unwrap();
         assert_eq!(patches.len(), 2);
@@ -263,7 +269,7 @@ mod toml_module {
              item_DescWeapon2=Type: Weapon\\nGrade: C\\nSize: 1\n\
              item_DescShield=Type: Shield\\nGrade: A\\nSize: 3\n",
         );
-        let ctx = ModuleContext { db: None, ini: &ini_map, config: &ModuleConfig::default() };
+        let ctx = ModuleContext { db: None, datacore: None, locale: None, ini: &ini_map, config: &ModuleConfig::default() };
 
         let patches = module.generate_patches(&ctx).unwrap();
         // Only Weapon1 and Shield have Grade: A
@@ -285,7 +291,7 @@ mod toml_module {
         "#;
         let module = TomlModule::from_embedded("test", toml);
         let ini_map = merge::parse_ini("other_key=Value\n");
-        let ctx = ModuleContext { db: None, ini: &ini_map, config: &ModuleConfig::default() };
+        let ctx = ModuleContext { db: None, datacore: None, locale: None, ini: &ini_map, config: &ModuleConfig::default() };
 
         let patches = module.generate_patches(&ctx).unwrap();
         assert!(patches.is_empty());
@@ -307,7 +313,7 @@ mod toml_module {
         let module = TomlModule::from_embedded("test", toml);
         let ini_map = merge::parse_ini("old_key=Val\n");
         let config = ModuleConfig::default();
-        let ctx = ModuleContext { db: None, ini: &ini_map, config: &config };
+        let ctx = ModuleContext { db: None, datacore: None, locale: None, ini: &ini_map, config: &config };
 
         let renames = module.generate_renames(&ctx).unwrap();
         assert_eq!(renames.len(), 2);
@@ -355,16 +361,17 @@ mod toml_module {
         assert!(!module.default_enabled());
     }
 
-    /// Helper: apply module-generated patches to INI content.
+    /// Helper: apply module-generated patches to INI content. Stacks
+    /// ops per key so repeated keys compose (matches the pipeline).
     fn apply_module_patches(
         ini: &str,
         patches: &[(String, crate::module::PatchOp)],
     ) -> String {
         use std::collections::HashMap;
-        let map: HashMap<String, crate::module::PatchOp> = patches
-            .iter()
-            .map(|(k, op)| (k.clone(), op.clone()))
-            .collect();
+        let mut map: HashMap<String, Vec<crate::module::PatchOp>> = HashMap::new();
+        for (k, op) in patches {
+            map.entry(k.clone()).or_default().push(op.clone());
+        }
         crate::merge::apply_patches(ini, &map)
     }
 }
@@ -406,6 +413,8 @@ mod module_integration {
         let config = ModuleConfig::default();
         let ctx = ModuleContext {
             db: None,
+            datacore: None,
+            locale: None,
             ini: &ini_map,
             config: &config,
         };
@@ -413,13 +422,14 @@ mod module_integration {
         let patches_a = mod_a.generate_patches(&ctx).unwrap();
         let patches_b = mod_b.generate_patches(&ctx).unwrap();
 
-        // Merge: both should apply independently
-        let mut merged: HashMap<String, PatchOp> = HashMap::new();
+        // Merge: both should apply independently (ops stacked per key
+        // in module-priority order).
+        let mut merged: HashMap<String, Vec<PatchOp>> = HashMap::new();
         for (k, op) in patches_a {
-            merged.insert(k, op);
+            merged.entry(k).or_default().push(op);
         }
         for (k, op) in patches_b {
-            merged.insert(k, op);
+            merged.entry(k).or_default().push(op);
         }
 
         let patched = merge::apply_patches(&ini, &merged);
@@ -456,6 +466,8 @@ mod module_integration {
         let config = ModuleConfig::default();
         let ctx = ModuleContext {
             db: None,
+            datacore: None,
+            locale: None,
             ini: &ini_map,
             config: &config,
         };
@@ -463,13 +475,14 @@ mod module_integration {
         let patches_a = mod_a.generate_patches(&ctx).unwrap();
         let patches_b = mod_b.generate_patches(&ctx).unwrap();
 
-        // Module B is inserted last → wins
-        let mut merged: HashMap<String, PatchOp> = HashMap::new();
+        // Module B runs after A → its Replace wipes A's under
+        // stacked-op semantics.
+        let mut merged: HashMap<String, Vec<PatchOp>> = HashMap::new();
         for (k, op) in patches_a {
-            merged.insert(k, op);
+            merged.entry(k).or_default().push(op);
         }
         for (k, op) in patches_b {
-            merged.insert(k, op);
+            merged.entry(k).or_default().push(op);
         }
 
         let patched = merge::apply_patches(&ini, &merged);
@@ -495,6 +508,8 @@ mod module_integration {
         let config = ModuleConfig::default();
         let ctx = ModuleContext {
             db: None,
+            datacore: None,
+            locale: None,
             ini: &ini_map,
             config: &config,
         };
@@ -561,14 +576,16 @@ mod module_integration {
         let config = ModuleConfig::default();
         let ctx = ModuleContext {
             db: None,
+            datacore: None,
+            locale: None,
             ini: &ini_map,
             config: &config,
         };
 
-        let mut merged: HashMap<String, PatchOp> = HashMap::new();
+        let mut merged: HashMap<String, Vec<PatchOp>> = HashMap::new();
         for module in [&mod_replace as &dyn Module, &mod_prefix, &mod_suffix] {
             for (k, op) in module.generate_patches(&ctx).unwrap() {
-                merged.insert(k, op);
+                merged.entry(k).or_default().push(op);
             }
         }
 
@@ -684,10 +701,10 @@ mod merge_unit {
         let renamed = merge::apply_renames(ini, &renames);
 
         // Now the code module would find item_NameSHLD_YORM_S01_Targa and patch it
-        let mut patches = HashMap::new();
+        let mut patches: HashMap<String, Vec<PatchOp>> = HashMap::new();
         patches.insert(
             "item_NameSHLD_YORM_S01_Targa".to_string(),
-            PatchOp::Replace("Targa Competition B".into()),
+            vec![PatchOp::Replace("Targa Competition B".into())],
         );
 
         let patched = merge::apply_patches(&renamed, &patches);

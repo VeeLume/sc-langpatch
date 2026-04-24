@@ -56,10 +56,32 @@ pub fn apply_renames(ini_content: &str, renames: &[KeyRename]) -> String {
     output
 }
 
+/// Apply a stacked op list to an original value in order.
+///
+/// - `Replace` overwrites the running value outright (a later Replace
+///   wipes any prior Prefix / Suffix as well as any prior Replace).
+/// - `Prefix` / `Suffix` compose on top of the running value, so two
+///   modules can both annotate the same key without losing each
+///   other's work.
+fn apply_ops(original: &str, ops: &[PatchOp]) -> String {
+    let mut value = original.to_string();
+    for op in ops {
+        match op {
+            PatchOp::Replace(v) => value = v.clone(),
+            PatchOp::Prefix(p) => value = format!("{p}{value}"),
+            PatchOp::Suffix(s) => value = format!("{value}{s}"),
+        }
+    }
+    value
+}
+
 /// Apply patches to the global.ini content.
 ///
-/// Processes line-by-line, substituting values where keys match.
-pub fn apply_patches(ini_content: &str, patches: &HashMap<String, PatchOp>) -> String {
+/// Processes line-by-line, substituting values where keys match. Each
+/// key can carry a stack of ops (see [`apply_ops`]), collected in
+/// module-priority order so multiple modules can compose on the same
+/// key without losing each other's patches.
+pub fn apply_patches(ini_content: &str, patches: &HashMap<String, Vec<PatchOp>>) -> String {
     let mut applied = 0;
     let mut output = String::with_capacity(ini_content.len());
 
@@ -67,13 +89,9 @@ pub fn apply_patches(ini_content: &str, patches: &HashMap<String, PatchOp>) -> S
         if let Some(eq_pos) = line.find('=') {
             let key = &line[..eq_pos];
 
-            if let Some(op) = patches.get(key) {
+            if let Some(ops) = patches.get(key) {
                 let original_value = &line[eq_pos + 1..];
-                let new_value = match op {
-                    PatchOp::Replace(v) => v.clone(),
-                    PatchOp::Prefix(p) => format!("{p}{original_value}"),
-                    PatchOp::Suffix(s) => format!("{original_value}{s}"),
-                };
+                let new_value = apply_ops(original_value, ops);
                 output.push_str(key);
                 output.push('=');
                 output.push_str(&new_value);
@@ -208,7 +226,7 @@ pub fn write_diff(
     version: &str,
     options_hash: &str,
     ini_content: &str,
-    patches: &HashMap<String, PatchOp>,
+    patches: &HashMap<String, Vec<PatchOp>>,
 ) -> Result<()> {
     let mut original = String::new();
     let mut modified = String::new();
@@ -216,13 +234,9 @@ pub fn write_diff(
     for line in ini_content.lines() {
         if let Some(eq_pos) = line.find('=') {
             let key = &line[..eq_pos];
-            if let Some(op) = patches.get(key) {
+            if let Some(ops) = patches.get(key) {
                 let original_value = &line[eq_pos + 1..];
-                let new_value = match op {
-                    PatchOp::Replace(v) => v.clone(),
-                    PatchOp::Prefix(p) => format!("{p}{original_value}"),
-                    PatchOp::Suffix(s) => format!("{original_value}{s}"),
-                };
+                let new_value = apply_ops(original_value, ops);
                 original.push_str(key);
                 original.push('=');
                 original.push_str(original_value);

@@ -26,11 +26,31 @@
             <span>
               {result.channel}: Applied {result.applied}/{result.total} patches
               {#if result.warnings.length > 0}
-                ({result.warnings.length} warnings)
+                — {result.warnings.length}
+                {result.warnings.length === 1 ? "warning" : "warnings"}
               {/if}
             </span>
           {/if}
         </div>
+
+        {#if result.module_stats.length > 0}
+          <div class="module-stats">
+            {#each result.module_stats as stat}
+              <div class="module-row">
+                <span class="module-name">{stat.module_name}</span>
+                <span class="module-count">{stat.patches} patches</span>
+              </div>
+              {#each stat.replace_overrides as override}
+                <div class="override-row">
+                  ↳ overrides {override.keys}
+                  {override.keys === 1 ? "key" : "keys"} from
+                  <span class="module-name">{override.overrode_module}</span>
+                </div>
+              {/each}
+            {/each}
+          </div>
+        {/if}
+
         {#each result.warnings as warning}
           <div class="warning">{warning}</div>
         {/each}
@@ -68,6 +88,44 @@
 
   .result-error {
     border-left: 3px solid #ef233c;
+  }
+
+  .module-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    margin: 2px 0 6px 32px;
+    padding: 6px 10px;
+    background: #0f1a30;
+    border-radius: 4px;
+    font-size: 0.82rem;
+  }
+
+  .module-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    color: #c8d4e6;
+  }
+
+  .module-name {
+    font-weight: 500;
+  }
+
+  .module-count {
+    color: #94a3b8;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .override-row {
+    margin-left: 12px;
+    color: #f4a261;
+    font-size: 0.78rem;
+  }
+
+  .override-row .module-name {
+    color: #e9c46a;
   }
 
   .warning {

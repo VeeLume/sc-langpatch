@@ -1,43 +1,16 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use sc_weapons::{DamageSummary, SustainKind};
 use svarog_datacore::{DataCoreDatabase, Instance, Value};
 
 use crate::module::{Module, ModuleContext, ModuleOption, OptionKind, PatchOp};
 
-// ── Extracted weapon data ──────────────────────────────────────────────────
-
-/// Resolved ammo stats, indexed by GUID string for fast lookup.
-struct AmmoResolved {
-    speed: f32,
-    damage_physical: f32,
-    damage_energy: f32,
-    damage_distortion: f32,
-    damage_thermal: f32,
-    damage_biochemical: f32,
-    damage_stun: f32,
-    penetration: f32,
-}
-
-/// All data we extract per weapon (guns only, not missiles).
-#[derive(Debug)]
-struct WeaponData {
-    name_key: String,
-    desc_key: String,
-    size: i32,
-    // Per-shot damage from ammo
-    alpha_physical: f32,
-    alpha_energy: f32,
-    alpha_distortion: f32,
-    alpha_thermal: f32,
-    alpha_biochemical: f32,
-    alpha_stun: f32,
-    penetration: f32,
-    projectile_speed: f32,
-    // Magazine / ammo
-    mag_size: i32,
-    max_ammo_load: f32,
-}
+// ── Missile data (legacy raw-svarog extraction) ─────────────────────────────
+//
+// TODO(sc-holotable): sc-weapons v1 only covers ship guns and FPS weapons.
+// Missiles / torpedoes need a feature request upstream before we can lift
+// this extraction into the shared crate.
 
 /// All data we extract per missile or torpedo.
 #[derive(Debug)]
@@ -47,17 +20,14 @@ struct MissileData {
     size: i32,
     sub_type: String,
     tracking_signal: String,
-    // Damage (from explosion params)
     damage_physical: f32,
     damage_energy: f32,
     damage_distortion: f32,
     damage_thermal: f32,
     damage_biochemical: f32,
     damage_stun: f32,
-    // Flight
     speed: f32,
     arm_time: f32,
-    // Targeting
     lock_time: f32,
     lock_angle: f32,
     lock_range_min: f32,
@@ -128,9 +98,8 @@ impl Module for WeaponEnhancer {
     }
 
     fn generate_patches(&self, ctx: &ModuleContext) -> Result<Vec<(String, PatchOp)>> {
-        let db = match ctx.db {
-            Some(db) => db,
-            None => return Ok(Vec::new()),
+        let (Some(datacore), Some(db)) = (ctx.datacore, ctx.db) else {
+            return Ok(Vec::new());
         };
 
         let opt_size_prefix = ctx.config.get_bool("size_prefix").unwrap_or(true);
@@ -138,71 +107,70 @@ impl Module for WeaponEnhancer {
         let opt_weapon_stats = ctx.config.get_bool("weapon_stats").unwrap_or(true);
         let opt_missile_stats = ctx.config.get_bool("missile_stats").unwrap_or(true);
 
-        let (weapons, missiles) = extract_all(db, ctx.ini);
         let mut patches = Vec::new();
+        let mut weapon_count = 0;
 
-        // ── Weapon patches ─────────────────────────────────────────────
-        for w in &weapons {
-            if w.name_key.is_empty() || !ctx.ini.contains_key(&w.name_key) {
+        // ── Ship weapons via sc-weapons ──────────────────────────────────
+        for w in sc_weapons::iter_ship_weapons(datacore) {
+            let Some(loc) = loc_keys_for(db, w.guid) else {
+                continue;
+            };
+            if !ctx.ini.contains_key(&loc.name_key) {
                 continue;
             }
+            weapon_count += 1;
 
             // Name prefix: size
             if opt_size_prefix && w.size > 0 {
                 patches.push((
-                    w.name_key.clone(),
+                    loc.name_key.clone(),
                     PatchOp::Prefix(format!("S{} ", w.size)),
                 ));
             }
 
             // Description suffix: weapon stats
-            if opt_weapon_stats && !w.desc_key.is_empty() && ctx.ini.contains_key(&w.desc_key) {
+            if opt_weapon_stats
+                && !loc.desc_key.is_empty()
+                && ctx.ini.contains_key(&loc.desc_key)
+            {
                 let mut lines = Vec::new();
 
-                let alpha = w.alpha_physical
-                    + w.alpha_energy
-                    + w.alpha_distortion
-                    + w.alpha_thermal
-                    + w.alpha_biochemical
-                    + w.alpha_stun;
-                if alpha > 0.0 {
-                    let mut parts = Vec::new();
-                    if w.alpha_physical > 0.0 {
-                        parts.push(format!("{:.0} phys", w.alpha_physical));
+                if let Some(dmg) = w.damage {
+                    let alpha = dmg.total();
+                    if alpha > 0.0 {
+                        lines.push(format!(
+                            "Alpha: {:.0} ({})",
+                            alpha,
+                            damage_breakdown(&dmg)
+                        ));
                     }
-                    if w.alpha_energy > 0.0 {
-                        parts.push(format!("{:.0} energy", w.alpha_energy));
-                    }
-                    if w.alpha_distortion > 0.0 {
-                        parts.push(format!("{:.0} dist", w.alpha_distortion));
-                    }
-                    if w.alpha_thermal > 0.0 {
-                        parts.push(format!("{:.0} therm", w.alpha_thermal));
-                    }
-                    if w.alpha_biochemical > 0.0 {
-                        parts.push(format!("{:.0} bio", w.alpha_biochemical));
-                    }
-                    if w.alpha_stun > 0.0 {
-                        parts.push(format!("{:.0} stun", w.alpha_stun));
-                    }
-                    lines.push(format!("Alpha: {:.0} ({})", alpha, parts.join(", ")));
                 }
 
-                if w.penetration > 0.0 {
-                    lines.push(format!("Penetration: {:.2}m", w.penetration));
+                // Penetration — not in sc-weapons v1. TODO(sc-holotable):
+                // request ShipWeapon.penetration_m exposed on the model.
+                if let Some(pen) = legacy_penetration(db, w.guid)
+                    && pen > 0.0
+                {
+                    lines.push(format!("Penetration: {pen:.2}m"));
                 }
 
-                if w.projectile_speed > 0.0 {
-                    lines.push(format!("Projectile Speed: {:.0} m/s", w.projectile_speed));
+                if let Some(speed) = w.ammo_speed
+                    && speed > 0.0
+                {
+                    lines.push(format!("Projectile Speed: {speed:.0} m/s"));
                 }
 
-                // Ballistic weapons have maxAmmoCount (total ammo pool)
-                // Energy weapons have maxAmmoLoad (capacitor)
-                if w.mag_size > 0 {
-                    lines.push(format!("Ammo: {}", w.mag_size));
+                // Ballistic weapons: physical round count.
+                if let Some(mag) = w.total_ammo
+                    && mag > 0
+                {
+                    lines.push(format!("Ammo: {mag}"));
                 }
-                if w.max_ammo_load > 0.0 {
-                    lines.push(format!("Capacitor: {:.0}", w.max_ammo_load));
+                // Energy weapons: capacitor size from the energy sustain model.
+                if let SustainKind::Energy(ref e) = w.sustain
+                    && e.max_ammo_load > 0.0
+                {
+                    lines.push(format!("Capacitor: {:.0}", e.max_ammo_load));
                 }
 
                 if !lines.is_empty() {
@@ -211,24 +179,22 @@ impl Module for WeaponEnhancer {
                         .map(|l| format!("\\n{l}"))
                         .collect::<String>();
                     let suffix = format!("\\n\\n<EM4>Weapon Stats</EM4>{stats_str}");
-                    patches.push((w.desc_key.clone(), PatchOp::Suffix(suffix)));
+                    patches.push((loc.desc_key.clone(), PatchOp::Suffix(suffix)));
                 }
             }
         }
 
-        // ── Missile/torpedo patches ────────────────────────────────────
+        // ── Missile/torpedo patches (raw-svarog, sc-weapons doesn't cover) ─
+        let missiles = extract_missiles(db, ctx.ini);
         for m in &missiles {
             if m.name_key.is_empty() || !ctx.ini.contains_key(&m.name_key) {
                 continue;
             }
 
-            // Name prefixes: tracking type, then size
             let mut prefix_parts = Vec::new();
-
             if opt_size_prefix && m.size > 0 {
                 prefix_parts.push(format!("S{}", m.size));
             }
-
             if opt_missile_type && !m.tracking_signal.is_empty() {
                 let tag = match m.tracking_signal.as_str() {
                     "Infrared" => "IR",
@@ -238,13 +204,11 @@ impl Module for WeaponEnhancer {
                 };
                 prefix_parts.push(format!("[{tag}]"));
             }
-
             if !prefix_parts.is_empty() {
                 let prefix = format!("{} ", prefix_parts.join(" "));
                 patches.push((m.name_key.clone(), PatchOp::Prefix(prefix)));
             }
 
-            // Description suffix: missile stats
             if opt_missile_stats && !m.desc_key.is_empty() && ctx.ini.contains_key(&m.desc_key) {
                 let mut lines = Vec::new();
 
@@ -280,19 +244,15 @@ impl Module for WeaponEnhancer {
                 if m.speed > 0.0 {
                     lines.push(format!("Speed: {:.0} m/s", m.speed));
                 }
-
                 if m.arm_time > 0.0 {
                     lines.push(format!("Arm Time: {:.2}s", m.arm_time));
                 }
-
                 if m.lock_time > 0.0 {
                     lines.push(format!("Lock Time: {:.1}s", m.lock_time));
                 }
-
                 if m.lock_angle > 0.0 {
                     lines.push(format!("Lock Angle: {:.0}°", m.lock_angle));
                 }
-
                 if m.lock_range_min > 0.0 || m.lock_range_max > 0.0 {
                     lines.push(format!(
                         "Lock Range: {:.0}m - {:.0}m",
@@ -316,22 +276,111 @@ impl Module for WeaponEnhancer {
             }
         }
 
+        eprintln!(
+            "  [WeaponEnhancer] {weapon_count} weapons, {} missiles",
+            missiles.len()
+        );
         Ok(patches)
     }
 }
 
-// ── Data extraction ─────────────────────────────────────────────────────────
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
-/// Walk all EntityClassDefinition records and extract weapon + missile data.
-fn extract_all(
-    db: &DataCoreDatabase,
-    ini: &HashMap<String, String>,
-) -> (Vec<WeaponData>, Vec<MissileData>) {
-    let ammo_index = build_ammo_index(db);
-    let mut weapons = Vec::new();
+fn damage_breakdown(d: &DamageSummary) -> String {
+    let mut parts = Vec::new();
+    if d.physical > 0.0 {
+        parts.push(format!("{:.0} phys", d.physical));
+    }
+    if d.energy > 0.0 {
+        parts.push(format!("{:.0} energy", d.energy));
+    }
+    if d.distortion > 0.0 {
+        parts.push(format!("{:.0} dist", d.distortion));
+    }
+    if d.thermal > 0.0 {
+        parts.push(format!("{:.0} therm", d.thermal));
+    }
+    if d.biochemical > 0.0 {
+        parts.push(format!("{:.0} bio", d.biochemical));
+    }
+    if d.stun > 0.0 {
+        parts.push(format!("{:.0} stun", d.stun));
+    }
+    parts.join(", ")
+}
+
+// ── Localization-key + penetration helpers (raw svarog) ─────────────────────
+//
+// TODO(sc-holotable): these walk the raw DCB because sc-weapons doesn't
+// expose (a) the INI localization keys we need for patching and (b) the
+// ammo penetration distance. File feature requests when landing this.
+
+struct LocKeys {
+    name_key: String,
+    desc_key: String,
+}
+
+fn loc_keys_for(db: &DataCoreDatabase, guid: sc_extract::Guid) -> Option<LocKeys> {
+    let record = db.record(&guid)?;
+    let inst = record.as_instance();
+    let components = inst.get_array("Components")?;
+    for comp in components {
+        let Some(comp_inst) = to_instance(db, &comp) else {
+            continue;
+        };
+        if comp_inst.type_name() != Some("SAttachableComponentParams") {
+            continue;
+        }
+        let attach_def = comp_inst.get_instance("AttachDef")?;
+        let loc = attach_def.get_instance("Localization")?;
+        let name_key = loc
+            .get_str("Name")
+            .unwrap_or("")
+            .strip_prefix('@')
+            .unwrap_or("")
+            .to_string();
+        let desc_key = loc
+            .get_str("Description")
+            .unwrap_or("")
+            .strip_prefix('@')
+            .unwrap_or("")
+            .to_string();
+        if name_key.is_empty() {
+            return None;
+        }
+        return Some(LocKeys { name_key, desc_key });
+    }
+    None
+}
+
+fn legacy_penetration(db: &DataCoreDatabase, guid: sc_extract::Guid) -> Option<f32> {
+    let record = db.record(&guid)?;
+    let inst = record.as_instance();
+    let components = inst.get_array("Components")?;
+    for comp in components {
+        let Some(comp_inst) = to_instance(db, &comp) else {
+            continue;
+        };
+        if comp_inst.type_name() != Some("SAmmoContainerComponentParams") {
+            continue;
+        }
+        let Some(Value::Reference(Some(r))) = comp_inst.get("ammoParamsRecord") else {
+            continue;
+        };
+        let ammo_record = db.record(&r.guid)?;
+        let ammo_inst = ammo_record.as_instance();
+        return ammo_inst
+            .get_instance("projectileParams")
+            .and_then(|p| p.get_instance("penetrationParams"))
+            .and_then(|pen| pen.get_f32("basePenetrationDistance"));
+    }
+    None
+}
+
+// ── Missile extraction (raw svarog) ─────────────────────────────────────────
+
+fn extract_missiles(db: &DataCoreDatabase, ini: &HashMap<String, String>) -> Vec<MissileData> {
     let mut missiles = Vec::new();
-    let mut weapon_count = 0;
-    let mut missile_count = 0;
 
     for record in db.records_by_type_containing("EntityClassDefinition") {
         let components: Vec<Value> = match record.get_array("Components") {
@@ -339,7 +388,6 @@ fn extract_all(
             None => continue,
         };
 
-        // Determine what type of item this is from SAttachableComponentParams
         let mut item_type = "";
         let mut item_sub_type = "";
         let mut size = 0i32;
@@ -377,97 +425,21 @@ fn extract_all(
             break;
         }
 
-        if name_key.is_empty() || !ini.contains_key(&name_key) {
+        if item_type != "Missile"
+            || name_key.is_empty()
+            || !ini.contains_key(&name_key)
+        {
             continue;
         }
 
-        match item_type {
-            "WeaponGun" => {
-                if let Some(w) = extract_weapon(db, &components, &ammo_index, name_key, desc_key, size) {
-                    weapons.push(w);
-                    weapon_count += 1;
-                }
-            }
-            "Missile" => {
-                if let Some(m) = extract_missile(db, &components, name_key, desc_key, size, item_sub_type) {
-                    missiles.push(m);
-                    missile_count += 1;
-                }
-            }
-            _ => {}
+        if let Some(m) = extract_missile(db, &components, name_key, desc_key, size, item_sub_type) {
+            missiles.push(m);
         }
     }
 
-    eprintln!(
-        "  [WeaponEnhancer] {weapon_count} weapons, {missile_count} missiles"
-    );
-    (weapons, missiles)
+    missiles
 }
 
-/// Extract weapon data from components.
-fn extract_weapon(
-    db: &DataCoreDatabase,
-    components: &[Value],
-    ammo_index: &HashMap<String, AmmoResolved>,
-    name_key: String,
-    desc_key: String,
-    size: i32,
-) -> Option<WeaponData> {
-    let mut data = WeaponData {
-        name_key,
-        desc_key,
-        size,
-        alpha_physical: 0.0,
-        alpha_energy: 0.0,
-        alpha_distortion: 0.0,
-        alpha_thermal: 0.0,
-        alpha_biochemical: 0.0,
-        alpha_stun: 0.0,
-        penetration: 0.0,
-        projectile_speed: 0.0,
-        mag_size: 0,
-        max_ammo_load: 0.0,
-    };
-
-    for comp in components {
-        let Some(inst) = to_instance(db, comp) else {
-            continue;
-        };
-        let type_name = inst.type_name().unwrap_or("");
-
-        match type_name {
-            "SAmmoContainerComponentParams" => {
-                data.mag_size = inst.get_i32("maxAmmoCount").unwrap_or(0);
-
-                // Resolve ammo params for damage/speed/penetration
-                if let Some(Value::Reference(Some(r))) = inst.get("ammoParamsRecord") {
-                    let guid = format!("{}", r.guid);
-                    if let Some(ammo) = ammo_index.get(&guid) {
-                        data.alpha_physical = ammo.damage_physical;
-                        data.alpha_energy = ammo.damage_energy;
-                        data.alpha_distortion = ammo.damage_distortion;
-                        data.alpha_thermal = ammo.damage_thermal;
-                        data.alpha_biochemical = ammo.damage_biochemical;
-                        data.alpha_stun = ammo.damage_stun;
-                        data.penetration = ammo.penetration;
-                        data.projectile_speed = ammo.speed;
-                    }
-                }
-            }
-            "SCItemWeaponComponentParams" => {
-                // Energy weapons have a capacitor-based ammo system
-                if let Some(regen) = inst.get_instance("weaponRegenConsumerParams") {
-                    data.max_ammo_load = regen.get_f32("maxAmmoLoad").unwrap_or(0.0);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    Some(data)
-}
-
-/// Extract missile/torpedo data from components.
 fn extract_missile(
     db: &DataCoreDatabase,
     components: &[Value],
@@ -506,24 +478,21 @@ fn extract_missile(
 
         data.arm_time = inst.get_f32("armTime").unwrap_or(0.0);
 
-        // Explosion damage
-        if let Some(expl) = inst.get_instance("explosionParams") {
-            if let Some(dmg) = expl.get_instance("damage") {
-                data.damage_physical = dmg.get_f32("DamagePhysical").unwrap_or(0.0);
-                data.damage_energy = dmg.get_f32("DamageEnergy").unwrap_or(0.0);
-                data.damage_distortion = dmg.get_f32("DamageDistortion").unwrap_or(0.0);
-                data.damage_thermal = dmg.get_f32("DamageThermal").unwrap_or(0.0);
-                data.damage_biochemical = dmg.get_f32("DamageBiochemical").unwrap_or(0.0);
-                data.damage_stun = dmg.get_f32("DamageStun").unwrap_or(0.0);
-            }
+        if let Some(expl) = inst.get_instance("explosionParams")
+            && let Some(dmg) = expl.get_instance("damage")
+        {
+            data.damage_physical = dmg.get_f32("DamagePhysical").unwrap_or(0.0);
+            data.damage_energy = dmg.get_f32("DamageEnergy").unwrap_or(0.0);
+            data.damage_distortion = dmg.get_f32("DamageDistortion").unwrap_or(0.0);
+            data.damage_thermal = dmg.get_f32("DamageThermal").unwrap_or(0.0);
+            data.damage_biochemical = dmg.get_f32("DamageBiochemical").unwrap_or(0.0);
+            data.damage_stun = dmg.get_f32("DamageStun").unwrap_or(0.0);
         }
 
-        // GCS: speed
         if let Some(gcs) = inst.get_instance("GCSParams") {
             data.speed = gcs.get_f32("linearSpeed").unwrap_or(0.0);
         }
 
-        // Targeting: lock time, angle, range
         if let Some(tgt) = inst.get_instance("targetingParams") {
             data.tracking_signal = tgt.get_str("trackingSignalType").unwrap_or("").to_string();
             data.lock_time = tgt.get_f32("lockTime").unwrap_or(0.0);
@@ -537,65 +506,6 @@ fn extract_missile(
 
     Some(data)
 }
-
-// ── Ammo index ──────────────────────────────────────────────────────────────
-
-/// Build a map from AmmoParams GUID → resolved damage/speed/penetration.
-fn build_ammo_index(db: &DataCoreDatabase) -> HashMap<String, AmmoResolved> {
-    let mut index = HashMap::new();
-
-    for record in db.records_by_type_containing("AmmoParams") {
-        let guid = format!("{}", record.id());
-
-        let speed = record.get_f32("speed").unwrap_or(0.0);
-
-        let (dp, de, dd, dt, db_chem, ds) =
-            if let Some(proj) = record.get_instance("projectileParams") {
-                extract_damage(&proj, "damage")
-            } else {
-                (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-            };
-
-        let penetration = record
-            .get_instance("projectileParams")
-            .and_then(|p| p.get_instance("penetrationParams"))
-            .and_then(|pen| pen.get_f32("basePenetrationDistance"))
-            .unwrap_or(0.0);
-
-        index.insert(
-            guid,
-            AmmoResolved {
-                speed,
-                damage_physical: dp,
-                damage_energy: de,
-                damage_distortion: dd,
-                damage_thermal: dt,
-                damage_biochemical: db_chem,
-                damage_stun: ds,
-                penetration,
-            },
-        );
-    }
-
-    index
-}
-
-fn extract_damage(parent: &Instance, field_name: &str) -> (f32, f32, f32, f32, f32, f32) {
-    if let Some(dmg) = parent.get_instance(field_name) {
-        (
-            dmg.get_f32("DamagePhysical").unwrap_or(0.0),
-            dmg.get_f32("DamageEnergy").unwrap_or(0.0),
-            dmg.get_f32("DamageDistortion").unwrap_or(0.0),
-            dmg.get_f32("DamageThermal").unwrap_or(0.0),
-            dmg.get_f32("DamageBiochemical").unwrap_or(0.0),
-            dmg.get_f32("DamageStun").unwrap_or(0.0),
-        )
-    } else {
-        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-    }
-}
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn to_instance<'a>(db: &'a DataCoreDatabase, val: &Value<'a>) -> Option<Instance<'a>> {
     match val {

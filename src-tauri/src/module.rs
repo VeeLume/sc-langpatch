@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Result;
+use sc_extract::{Datacore, LocaleMap};
 use serde::{Deserialize, Serialize};
 use specta::Type;
 use svarog_datacore::DataCoreDatabase;
@@ -105,9 +106,23 @@ impl ModuleConfig {
 
 /// Data available to modules during patch generation.
 pub struct ModuleContext<'a> {
-    /// DataCore database (from Game2.dcb). None if extraction failed or skipped.
+    /// Raw DataCore database (from Game2.dcb). `None` if extraction failed
+    /// or no enabled module asked for it.
+    ///
+    /// Legacy code modules (`illegal_goods`, `component_grades_derived`)
+    /// read this directly. New modules should prefer [`Self::datacore`].
     pub db: Option<&'a DataCoreDatabase>,
-    /// Parsed global.ini: key → value.
+    /// sc-holotable Datacore handle. Same underlying data as [`Self::db`]
+    /// (which is `datacore.db()`) but exposes the typed `DataPools` and
+    /// generated record bindings sc-weapons / sc-contracts consume.
+    pub datacore: Option<&'a Datacore>,
+    /// Base game locale parsed from `Data/Localization/english/global.ini`,
+    /// before any of our patches are applied. Use this for resolving
+    /// `LocaleKey`s returned by sc-holotable types. Unaffected by the
+    /// community language pack overlay (which only matters at write time).
+    pub locale: Option<&'a LocaleMap>,
+    /// Parsed global.ini: key → value. Reflects the post-rename, pre-patch
+    /// state during phase 2.
     pub ini: &'a HashMap<String, String>,
     /// User configuration for this specific module.
     pub config: &'a ModuleConfig,
@@ -137,8 +152,15 @@ pub trait Module: Send + Sync {
         Vec::new()
     }
 
-    /// Whether this module needs the DataCore database.
+    /// Whether this module needs the DataCore database. Setting this
+    /// true populates both [`ModuleContext::db`] and [`ModuleContext::datacore`].
     fn needs_datacore(&self) -> bool {
+        false
+    }
+
+    /// Whether this module needs the parsed base [`LocaleMap`]. Independent
+    /// of [`Self::needs_datacore`] — `sc-contracts`, for example, needs both.
+    fn needs_locale(&self) -> bool {
         false
     }
 

@@ -102,6 +102,21 @@ id: string;
  */
 label: string; description: string; kind: OptionKind; default: string }
 /**
+ * Per-module outcome for a single patch run.
+ */
+export type ModuleStat = { module_id: string; module_name: string; 
+/**
+ * Number of (key, op) pairs this module emitted.
+ */
+patches: number; 
+/**
+ * Replace ops from this module that landed on a key another,
+ * earlier-running module had already Replaced. The later Replace
+ * wins and the earlier module's value is discarded. Aggregated by
+ * the overridden module's name (→ number of overridden keys).
+ */
+replace_overrides: ReplaceOverride[] }
+/**
  * A single option value entry.
  */
 export type OptionEntry = { name: string; value: OptionValue }
@@ -110,8 +125,26 @@ export type OptionKind = { type: "Bool" } | { type: "String" } | { type: "Choice
  * A user-chosen value for a module option.
  */
 export type OptionValue = { type: "Bool"; value: boolean } | { type: "String"; value: string } | { type: "Choice"; value: string }
-export type PatchResult = { channel: string; applied: number; total: number; warnings: string[]; error: string | null }
+export type PatchResult = { channel: string; applied: number; total: number; 
+/**
+ * Per-module patch counts and Replace-conflict details. One entry
+ * per enabled module that ran, in the order they ran (priority).
+ */
+module_stats: ModuleStat[]; 
+/**
+ * True issues only — module errors, skips for missing datacore /
+ * locale, etc. Not per-module stats (those are `module_stats`).
+ */
+warnings: string[]; error: string | null }
 export type RemoveResult = { channel: string; removed: boolean; error: string | null }
+/**
+ * Aggregated count of Replace conflicts against a single earlier module.
+ */
+export type ReplaceOverride = { 
+/**
+ * Name of the earlier module whose Replace was overridden.
+ */
+overrode_module: string; keys: number }
 
 /** tauri-specta globals **/
 
