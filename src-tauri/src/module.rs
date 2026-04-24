@@ -170,4 +170,7 @@ pub struct ModuleInfo {
     pub enabled: bool,
     pub needs_datacore: bool,
     pub options: Vec<ModuleOption>,
+    /// Persisted option values from disk. Empty if the user has not
+    /// customized this module — the UI should fall back to option defaults.
+    pub option_values: Vec<OptionEntry>,
 }

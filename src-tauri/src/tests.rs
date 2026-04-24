@@ -707,3 +707,143 @@ mod merge_unit {
         assert_eq!(decoded, "A", "BOM should be stripped");
     }
 }
+
+#[cfg(test)]
+mod language_pack {
+    use crate::merge;
+    use crate::test_helpers::fixtures::*;
+
+    #[test]
+    fn replaces_matching_keys() {
+        let base = make_ini(&[
+            ("item_NameABC", "Bracer"),
+            ("item_DescABC", "A cooler."),
+            ("other", "untouched"),
+        ]);
+        let pack = make_ini(&[
+            ("item_NameABC", "Armreif"),
+            ("item_DescABC", "Ein Kühler."),
+        ]);
+
+        let result = merge::apply_language_pack(&base, &pack);
+
+        assert_ini_value(&result, "item_NameABC", "Armreif");
+        assert_ini_value(&result, "item_DescABC", "Ein Kühler.");
+        assert_ini_unchanged(&result, "other", "untouched");
+    }
+
+    #[test]
+    fn appends_new_keys_not_in_base() {
+        let base = make_ini(&[("existing", "value")]);
+        let pack = make_ini(&[
+            ("existing", "translated"),
+            ("brand_new", "neuer eintrag"),
+        ]);
+
+        let result = merge::apply_language_pack(&base, &pack);
+
+        assert_ini_value(&result, "existing", "translated");
+        assert_ini_value(&result, "brand_new", "neuer eintrag");
+    }
+
+    #[test]
+    fn preserves_base_line_order() {
+        let base = "zebra=Z\nalpha=A\nmiddle=M\n";
+        let pack = "middle=übersetzt\n";
+
+        let result = merge::apply_language_pack(base, pack);
+
+        let keys: Vec<&str> = result
+            .lines()
+            .filter_map(|l| l.split('=').next())
+            .collect();
+        assert_eq!(keys, vec!["zebra", "alpha", "middle"]);
+    }
+
+    #[test]
+    fn ignores_lines_without_equals() {
+        let base = make_ini(&[("key", "original")]);
+        let pack = "; comment line\n\nkey=translated\nrandom garbage line\n";
+
+        let result = merge::apply_language_pack(&base, pack);
+
+        assert_ini_value(&result, "key", "translated");
+    }
+
+    #[test]
+    fn preserves_values_with_embedded_equals() {
+        let base = make_ini(&[("formula", "a=b+c=d")]);
+        let pack = "formula=x=y+z=w\n";
+
+        let result = merge::apply_language_pack(&base, pack);
+
+        assert_ini_value(&result, "formula", "x=y+z=w");
+    }
+
+    #[test]
+    fn decode_auto_utf8_with_bom() {
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice("key=Wert\n".as_bytes());
+        let decoded = merge::decode_ini_auto(&bytes).unwrap();
+        assert_eq!(decoded, "key=Wert\n");
+    }
+
+    #[test]
+    fn decode_auto_utf8_no_bom() {
+        let decoded = merge::decode_ini_auto("key=Wert\n".as_bytes()).unwrap();
+        assert_eq!(decoded, "key=Wert\n");
+    }
+
+    #[test]
+    fn decode_auto_utf16_le_with_bom() {
+        let mut bytes = vec![0xFF, 0xFE];
+        for ch in "key=Wert".encode_utf16() {
+            bytes.extend_from_slice(&ch.to_le_bytes());
+        }
+        let decoded = merge::decode_ini_auto(&bytes).unwrap();
+        assert_eq!(decoded, "key=Wert");
+    }
+}
+
+#[cfg(test)]
+mod language_pack_url {
+    use crate::normalize_language_pack_url;
+
+    #[test]
+    fn github_blob_url_rewrites_to_raw() {
+        let input =
+            "https://github.com/rjcncpt/StarCitizen-Deutsch-INI/blob/main/live/global.ini";
+        let expected =
+            "https://raw.githubusercontent.com/rjcncpt/StarCitizen-Deutsch-INI/main/live/global.ini";
+        assert_eq!(normalize_language_pack_url(input), expected);
+    }
+
+    #[test]
+    fn github_raw_web_url_rewrites_to_raw() {
+        let input =
+            "https://github.com/rjcncpt/StarCitizen-Deutsch-INI/raw/main/live/global.ini";
+        let expected =
+            "https://raw.githubusercontent.com/rjcncpt/StarCitizen-Deutsch-INI/main/live/global.ini";
+        assert_eq!(normalize_language_pack_url(input), expected);
+    }
+
+    #[test]
+    fn already_raw_url_passes_through() {
+        let input =
+            "https://raw.githubusercontent.com/rjcncpt/StarCitizen-Deutsch-INI/main/live/global.ini";
+        assert_eq!(normalize_language_pack_url(input), input);
+    }
+
+    #[test]
+    fn non_github_url_passes_through() {
+        let input = "https://example.com/packs/de.ini";
+        assert_eq!(normalize_language_pack_url(input), input);
+    }
+
+    #[test]
+    fn github_repo_root_url_passes_through() {
+        // Not a blob/raw URL — do not touch it (we have no path to rewrite)
+        let input = "https://github.com/rjcncpt/StarCitizen-Deutsch-INI";
+        assert_eq!(normalize_language_pack_url(input), input);
+    }
+}

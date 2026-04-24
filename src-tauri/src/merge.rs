@@ -107,6 +107,94 @@ pub fn decode_ini(bytes: &[u8]) -> Result<String> {
     Ok(s.strip_prefix('\u{FEFF}').unwrap_or(&s).to_owned())
 }
 
+/// Decode an INI-style file from a user-provided path. Auto-detects encoding
+/// based on BOM: UTF-8 BOM, UTF-16 LE BOM, UTF-16 BE BOM; otherwise falls
+/// back to UTF-8.
+///
+/// Community language packs are usually UTF-8 (with or without BOM), but the
+/// game itself ships UTF-16 LE, so we handle both.
+pub fn decode_ini_auto(bytes: &[u8]) -> Result<String> {
+    if bytes.starts_with(b"\xFF\xFE") {
+        let (decoded, _, had_errors) = encoding_rs::UTF_16LE.decode(&bytes[2..]);
+        if had_errors {
+            anyhow::bail!("UTF-16 LE decoding produced errors");
+        }
+        return Ok(decoded.into_owned());
+    }
+    if bytes.starts_with(b"\xFE\xFF") {
+        let (decoded, _, had_errors) = encoding_rs::UTF_16BE.decode(&bytes[2..]);
+        if had_errors {
+            anyhow::bail!("UTF-16 BE decoding produced errors");
+        }
+        return Ok(decoded.into_owned());
+    }
+    let body = if bytes.starts_with(b"\xEF\xBB\xBF") {
+        &bytes[3..]
+    } else {
+        bytes
+    };
+    let (decoded, _, had_errors) = encoding_rs::UTF_8.decode(body);
+    if had_errors {
+        anyhow::bail!("UTF-8 decoding produced errors");
+    }
+    Ok(decoded.into_owned())
+}
+
+/// Overlay a community language pack onto the base INI.
+///
+/// For every `key=value` line in the pack, replaces the value of the matching
+/// key in the base INI. Keys present in the pack but not in the base are
+/// appended to the end of the output.
+///
+/// Order and formatting of lines from the base INI are preserved. Lines
+/// without `=` in the pack are ignored.
+pub fn apply_language_pack(ini_content: &str, pack_content: &str) -> String {
+    let mut overrides: HashMap<&str, &str> = HashMap::new();
+    for line in pack_content.lines() {
+        if let Some(eq_pos) = line.find('=') {
+            let key = &line[..eq_pos];
+            let value = &line[eq_pos + 1..];
+            overrides.insert(key, value);
+        }
+    }
+
+    let mut output = String::with_capacity(ini_content.len());
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut replaced = 0usize;
+
+    for line in ini_content.lines() {
+        if let Some(eq_pos) = line.find('=') {
+            let key = &line[..eq_pos];
+            if let Some(new_value) = overrides.get(key) {
+                output.push_str(key);
+                output.push('=');
+                output.push_str(new_value);
+                replaced += 1;
+                seen.insert(key);
+            } else {
+                output.push_str(line);
+            }
+        } else {
+            output.push_str(line);
+        }
+        output.push('\n');
+    }
+
+    let mut added = 0usize;
+    for (key, value) in &overrides {
+        if !seen.contains(key) {
+            output.push_str(key);
+            output.push('=');
+            output.push_str(value);
+            output.push('\n');
+            added += 1;
+        }
+    }
+
+    eprintln!("  Language pack: {replaced} keys replaced, {added} keys added");
+    output
+}
+
 /// Write debug diff files containing only the patched lines.
 ///
 /// Two files are written to `debug_dir`:

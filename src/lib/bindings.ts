@@ -19,6 +19,18 @@ async getModules() : Promise<ModuleInfo[]> {
 async setModuleConfig(moduleId: string, config: ModuleConfig) : Promise<void> {
     await TAURI_INVOKE("set_module_config", { moduleId, config });
 },
+async getLanguagePack() : Promise<string | null> {
+    return await TAURI_INVOKE("get_language_pack");
+},
+async setLanguagePack(path: string | null) : Promise<void> {
+    await TAURI_INVOKE("set_language_pack", { path });
+},
+async getSelectedChannels() : Promise<string[]> {
+    return await TAURI_INVOKE("get_selected_channels");
+},
+async setSelectedChannels(channels: string[]) : Promise<void> {
+    await TAURI_INVOKE("set_selected_channels", { channels });
+},
 async patch(installations: Installation[]) : Promise<Result<PatchResult[], string>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("patch", { installations }) };
@@ -71,7 +83,12 @@ options?: OptionEntry[] }
 /**
  * Serializable module metadata for the GUI.
  */
-export type ModuleInfo = { id: string; name: string; description: string; default_enabled: boolean; enabled: boolean; needs_datacore: boolean; options: ModuleOption[] }
+export type ModuleInfo = { id: string; name: string; description: string; default_enabled: boolean; enabled: boolean; needs_datacore: boolean; options: ModuleOption[]; 
+/**
+ * Persisted option values from disk. Empty if the user has not
+ * customized this module — the UI should fall back to option defaults.
+ */
+option_values: OptionEntry[] }
 /**
  * Describes a configurable option exposed by a module.
  */

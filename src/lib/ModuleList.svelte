@@ -17,16 +17,22 @@
   // Track user-chosen option values per module: moduleId -> { optionName -> OptionValue }
   let moduleOptions = $state<Record<string, Record<string, OptionValue>>>({});
 
-  export function initOptions(mods: ModuleInfo[]) {
-    for (const mod of mods) {
-      if (mod.options.length > 0) {
-        moduleOptions[mod.id] = {};
-        for (const opt of mod.options) {
-          moduleOptions[mod.id][opt.id] = defaultValue(opt);
-        }
+  // Seed moduleOptions from each ModuleInfo. Prefers persisted `option_values`
+  // from the backend; falls back to the option's declared default. Runs once
+  // per module — subsequent updates come from updateOption() to avoid
+  // clobbering in-flight UI state.
+  $effect(() => {
+    for (const mod of modules) {
+      if (mod.options.length === 0) continue;
+      if (moduleOptions[mod.id]) continue;
+      const saved = new Map(mod.option_values.map((e) => [e.name, e.value]));
+      const values: Record<string, OptionValue> = {};
+      for (const opt of mod.options) {
+        values[opt.id] = saved.get(opt.id) ?? defaultValue(opt);
       }
+      moduleOptions[mod.id] = values;
     }
-  }
+  });
 
   function defaultValue(
     opt: import("$lib/bindings").ModuleOption

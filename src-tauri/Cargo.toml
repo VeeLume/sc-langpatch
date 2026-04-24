@@ -34,6 +34,7 @@ glob-match = "0.2"
 svarog-p4k = { git = "https://github.com/19h/svarog.git" }
 svarog-datacore = { git = "https://github.com/19h/svarog.git" }
 chrono = "0.4.44"
+ureq = { version = "2", default-features = false, features = ["tls"] }
 
 [profile.release]
 opt-level = 3
