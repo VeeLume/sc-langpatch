@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Removed an accidental `[patch]` override in `src-tauri/Cargo.toml` that pointed svarog crates at a local working tree (`E:/repros/Svarog`), breaking builds for anyone else.
+
 ## [0.3.0] - 2026-05-02
 
 ### Added

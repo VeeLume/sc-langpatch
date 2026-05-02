@@ -55,14 +55,6 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 # Optional: not pulled in for the Tauri binary.
 superlighttui = "0.19"
 
-# Local svarog override — mirrors sc-holotable's workspace patch. Treats
-# `DataCoreReference::is_null` `instance_index == -1` as a null sentinel.
-# Drop once the fix lands upstream and the pinned rev above is bumped.
-[patch."https://github.com/19h/Svarog.git"]
-svarog-common = { path = "E:/repros/Svarog/crates/svarog-common" }
-svarog-datacore = { path = "E:/repros/Svarog/crates/svarog-datacore" }
-svarog-p4k = { path = "E:/repros/Svarog/crates/svarog-p4k" }
-
 # Mirror sc-holotable's workspace-internal profile override (their
 # Cargo.toml:71-72 pins opt-level=1 for release). We extend it to dev
 # too — without the optimization the generated record_store.rs match
