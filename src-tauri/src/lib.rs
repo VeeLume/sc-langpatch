@@ -2,6 +2,8 @@ pub mod discovery;
 pub mod merge;
 pub mod module;
 pub mod modules;
+pub mod formatter_helpers;
+pub mod preview;
 
 #[cfg(test)]
 mod test_helpers;
@@ -311,11 +313,29 @@ fn patch_installation(
     // Decide once which holotable artefacts the current module set wants.
     let needs = ModuleNeeds::collect(configs);
 
-    // Datacore extraction goes through sc-extract's staged pipeline. We pass
-    // a minimal AssetData (no locale build — we construct ours below from
-    // the post-language-pack INI for community-translation consistency).
+    // Datacore extraction goes through sc-extract's staged pipeline.
+    //
+    // We use `AssetConfig::standard()` (locale on) rather than `minimal()`
+    // because `Datacore::parse` builds [`DisplayNameCache`] eagerly from
+    // `asset_data.locale`, and that cache is what every downstream
+    // resolver (BlueprintPoolRegistry item names, ShipRegistry display
+    // names, etc.) reaches into for human-readable text. With
+    // `minimal()` the cache comes back empty and every resolved
+    // entity name turns into the empty string — the "0 with
+    // display_name" failure mode we saw when modules like
+    // `mission_enhancer` started leaning on these caches.
+    //
+    // The trade-off: `DisplayNameCache` is baked from BASE English at
+    // parse time, so when a community language pack is overlaid below,
+    // those baked names won't pick up the translations. Module-level
+    // INI lookups *do* see the overlaid strings (we hand them the
+    // post-overlay [`LocaleMap`] further down), so player-visible
+    // patches still translate correctly — but cross-record name
+    // resolution (e.g. blueprint pool → entity → name) stays English.
+    // Acceptable until / unless we add a mechanism to rebuild the
+    // cache against the post-overlay locale.
     let datacore: Option<Datacore> = if needs.datacore {
-        match AssetData::extract(&assets, &AssetConfig::minimal())
+        match AssetData::extract(&assets, &AssetConfig::standard())
             .and_then(|d| Datacore::parse(&assets, &d, &DatacoreConfig::standard()))
         {
             Ok(dc) => Some(dc),

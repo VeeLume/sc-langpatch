@@ -4,6 +4,7 @@ use anyhow::Result;
 use sc_weapons::{DamageSummary, SustainKind};
 use svarog_datacore::{DataCoreDatabase, Instance, Value};
 
+use crate::formatter_helpers::{header, NEWLINE, PARAGRAPH_BREAK};
 use crate::module::{Module, ModuleContext, ModuleOption, OptionKind, PatchOp};
 
 // ── Missile data (legacy raw-svarog extraction) ─────────────────────────────
@@ -176,9 +177,12 @@ impl Module for WeaponEnhancer {
                 if !lines.is_empty() {
                     let stats_str = lines
                         .iter()
-                        .map(|l| format!("\\n{l}"))
+                        .map(|l| format!("{NEWLINE}{l}"))
                         .collect::<String>();
-                    let suffix = format!("\\n\\n<EM4>Weapon Stats</EM4>{stats_str}");
+                    let suffix = format!(
+                        "{PARAGRAPH_BREAK}{}{stats_str}",
+                        header("Weapon Stats")
+                    );
                     patches.push((loc.desc_key.clone(), PatchOp::Suffix(suffix)));
                 }
             }
@@ -263,14 +267,15 @@ impl Module for WeaponEnhancer {
                 if !lines.is_empty() {
                     let stats_str = lines
                         .iter()
-                        .map(|l| format!("\\n{l}"))
+                        .map(|l| format!("{NEWLINE}{l}"))
                         .collect::<String>();
                     let label = if m.sub_type == "Torpedo" {
                         "Torpedo Stats"
                     } else {
                         "Missile Stats"
                     };
-                    let suffix = format!("\\n\\n<EM4>{label}</EM4>{stats_str}");
+                    let suffix =
+                        format!("{PARAGRAPH_BREAK}{}{stats_str}", header(label));
                     patches.push((m.desc_key.clone(), PatchOp::Suffix(suffix)));
                 }
             }

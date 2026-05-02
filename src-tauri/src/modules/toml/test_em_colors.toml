@@ -1,0 +1,14 @@
+[module]
+name = "EM Color Test (Combat Gauntlet #1)"
+description = "Prefix the Combat Gauntlet Scenario #1 title and description with each <EMx> color tag, side-by-side. Used to verify how the SC HUD renders the same markup in title vs description contexts. Only loaded in dev builds; opt-in via the UI when you actually want the test ribbon."
+default_enabled = false
+
+# Title gets the test ribbon prefixed.
+[[patch]]
+key = "GFS_ShipWaveAttack_Mission01_Title"
+prefix = "<EM0>EM0</EM0> <EM1>EM1</EM1> <EM2>EM2</EM2> <EM3>EM3</EM3> <EM4>EM4</EM4> "
+
+# Description gets the same ribbon prefixed so we can compare.
+[[patch]]
+key = "GFS_ShipWaveAttack_Mission01_Desc"
+prefix = "<EM0>EM0</EM0> <EM1>EM1</EM1> <EM2>EM2</EM2> <EM3>EM3</EM3> <EM4>EM4</EM4> "
