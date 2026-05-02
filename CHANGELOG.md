@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- `superlighttui` is now properly feature-gated behind `preview_tui` instead of being a hard dep — the Tauri release build no longer pulls it. Build the TUI with `cargo run --bin preview_tui --features preview_tui`.
+
 ## [0.3.1] - 2026-05-02
 
 ### Fixed

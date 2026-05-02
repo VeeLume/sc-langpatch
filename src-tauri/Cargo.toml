@@ -13,6 +13,16 @@ default-run = "sc-langpatch"
 name = "sc_langpatch_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[features]
+default = []
+# Enables the interactive `preview_tui` binary. Off by default so the
+# Tauri release build doesn't pull superlighttui.
+preview_tui = ["dep:superlighttui"]
+
+[[bin]]
+name = "preview_tui"
+required-features = ["preview_tui"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -52,8 +62,10 @@ chrono = "0.4.44"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
 # Interactive preview TUI dep — used only by `src/bin/preview_tui.rs`.
-# Optional: not pulled in for the Tauri binary.
-superlighttui = "0.19"
+# Gated behind the `preview_tui` feature so the Tauri release build
+# doesn't pull it. Build the bin with:
+#   cargo run --bin preview_tui --features preview_tui
+superlighttui = { version = "0.19", optional = true }
 
 # Mirror sc-holotable's workspace-internal profile override (their
 # Cargo.toml:71-72 pins opt-level=1 for release). We extend it to dev
