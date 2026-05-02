@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-02
+
 ### Added
 - Community language pack support — overlay a user-provided `global.ini` (file path or URL) onto the base English INI before patches run. Auto-rewrites GitHub blob/raw URLs to `raw.githubusercontent.com`.
 - Persisted user settings — module toggles, option values, selected install channels, and the language pack source survive restarts (saved to `%APPDATA%\sc-langpatch\config.toml`).
