@@ -8,36 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- Headless preview tooling — `preview_cli` for AI-agent / shell debugging, `preview_tui` (superlighttui-backed) for in-terminal exploration without restarting the game. Shared `PreviewSession` core loads datacore + INI once and exposes pool iteration + rendered output.
-- Mission Enhancer rewritten as a pool-first patcher driven by sc-contracts v0.2.0 — title and description pools are walked independently, with aggressive merging across same-key members. The result is `[BP]`/`[BP*]`/`[BP?]` blueprint markers, `[Solo]`/`[Uniq]`/`[Illegal]`/`[~]` flags, `[CS Risk]`/`[CS Risk!]` crimestat tags, and a `Variants (N)` section for description pools whose members diverge.
-- Variant labels resolve through a priority ladder (region → mission rank → debug-name location/difficulty hints → numeric fallback), with diagnostic logging for outliers.
-- Encounter rendering pipeline — slots aggressively merged within `(encounter, phase, tags, role)`, phase ranges collapsed via numeric-token detection (`Wave 1` + `Wave 2` + `Wave 3` → `Wave 1-3`), identical lines deduped with `(×N)` suffix, skill ranges merged across slots.
-- Encounter heading shows enemy spawn totals — `Encounters · 20x Ships · 10x NPC` (escort ships and allied NPCs excluded).
-- Cargo / value / faction tags aggregated into a single summary line at the end of the encounters block.
-- Region-label merger collapses repeated system prefixes — `Stanton: Hurston / Stanton: ArcCorp` becomes `Stanton: Hurston, ArcCorp`, and `Available at` lists put each star system on its own line.
-- Manufacturer prefix discovery walks the DCB so ship-name shortening picks up newly-added manufacturers automatically (no hardcoded list).
+- Community language pack support — overlay a user-provided `global.ini` (file path or URL) onto the base English INI before patches run. Auto-rewrites GitHub blob/raw URLs to `raw.githubusercontent.com`.
+- Persisted user settings — module toggles, option values, selected install channels, and the language pack source survive restarts (saved to `%APPDATA%\sc-langpatch\config.toml`).
+- Mission `Variants` section — when a description key is shared across multiple missions whose facts diverge, the patch surfaces a per-variant breakdown with a region / mission-rank / location-hint label per group.
+- Mission `Available at` section — lists the star systems and bodies the mission is offered at, with each star system on its own line.
+- Encounter section heading shows enemy spawn totals: `Encounters · 20x Ships · 10x NPC` (allied NPCs and escort ships excluded).
+- Cargo / value / faction tag summary line at the end of the encounters block (replaces the per-slot tag clutter).
+- Phase ranges (`Wave 1` + `Wave 2` + `Wave 3` → `Wave 1-3`), skill ranges (`Skill 40-60`), and identical-line dedup (`(×3)` suffix) within the encounters block.
+- `One of:` rendering when an encounter merges several single-ship single-concurrent slot alternatives.
+- New title tags: `[BP*]` (blueprint pool varies between sibling missions), `[BP?]` (mixed presence — some siblings have BP, others don't), `[~]` (other behavior axes vary). Existing `[Solo]`, `[Uniq]`, `[Illegal]`, `[CS Risk]`, `[CS Risk!]` markers are now consistent across the rendered output.
+- Per-module patch statistics in the UI — counts and override details surface in their own panel instead of being mixed into warnings.
+- Headless preview tooling for debugging — `preview_cli` (text output, scriptable) and `preview_tui` (interactive superlighttui-based browser). Loads datacore + INI once, lets you iterate on rendering without restarting the game.
 
 ### Changed
-- `Color` enum in `formatter_helpers` renamed from chat-color names (`White`/`Cyan`/`Green`/`Yellow`/`Red`) to intent-based names (`Plain`/`Faint`/`Soft`/`Underline`/`Highlight`) that match the contracts panel — the only context where these tags reliably render distinctly.
-- Section headers and title tags use `Color::Highlight` (renders as blue accent in contracts).
-- Encounter labels are wrapped in `Color::Underline` to act as scan anchors down the left edge.
-- Skill moved from the trailing meta to the front of each encounter line: `Skill 20 · 4x: ships`.
-- NPC encounters collapse into a single `NPCs: N` total instead of per-slot listing — the FPS-mission breakdown was high-volume noise.
-- Cooldown formatter now reads `DurationRange.mean_seconds` as minutes (sc-contracts upstream misnomer), renders sub-minute fractions as seconds and ≥1 minute as `Nmin`.
-- Bumped sc-extract / sc-contracts / sc-weapons / sc-installs to `sc-holotable/v0.2.0`. Explicit feature flags (`contracts`, `servicebeacon`, `entityclassdefinition`) on `sc-extract` to ensure registry resolution lights up across the git workspace boundary.
-- Tauri datacore extraction now uses `AssetConfig::standard()` so the `DisplayNameCache` is populated and downstream resolvers (blueprint item names, ship display names) actually return text.
+- Patches now stack per key — `Prefix` and `Suffix` from multiple modules compose in module-priority order instead of silently overwriting each other. Only `Replace` over `Replace` is a true conflict.
+- Encounter labels are underlined in the contracts panel for easier scanning down the left edge.
+- Encounter section uses a multi-line layout: encounter / phase label on its own line, body (skill, count, ships) indented underneath. Skill moved to the leading position so it's always at a predictable spot.
+- NPC encounters collapse into a single `NPCs: N` total instead of one line per spawn slot — the FPS-mission per-slot breakdown was high-volume noise.
+- Region labels merge across mission span entries — `Stanton: Hurston / Stanton: ArcCorp` becomes `Stanton: Hurston, ArcCorp` (system prefix appears once).
+- Wrapper-prefix encounter names are cleaned for display: `Defend Location Wrapper Enemy Ships` → `Enemy Ships`, `Escort Ship To Landing Area Initial Enemies` → `Initial Enemies`, etc.
+- Phase labels that echo the encounter (`Initial Enemies [Initial Enemies]`, `Mission Targets [Target]`, `Allied [Allies]`) collapse to just the encounter — handles singular/plural and cross-inflection (`-ed` ↔ `-ies`, `-er` ↔ `-ing`).
+- Mission cooldowns display in minutes (was incorrectly reading the upstream value as seconds; the field is misnamed in sc-contracts).
+- Bumped sc-extract / sc-contracts / sc-weapons / sc-installs to `sc-holotable/v0.2.0`.
 
 ### Fixed
-- Blueprint item names no longer come back empty in patches — the locale was missing from `AssetData` extraction in the patcher path while the preview path had it; both paths now use `standard()`.
-- Ship encounter candidates and blueprint pools no longer silently empty — `entityclassdefinition` feature flag wired through explicitly.
-- Description-pool variant labels with sibling missions sharing a region no longer repeat the system prefix in the join.
-- Encounter labels with generator wrappers (`Defend Location Wrapper`, `Escort Ship To/From Landing Area`, `Support Attacked Ship`, …) strip the wrapper before display. The strip now also runs on phase labels so wrappers don't leak back when the phase supersedes the encounter.
-- Phase labels redundant with the encounter (`Initial Enemies [Initial Enemies]`, `Mission Targets [Target]`, `Allied [Allies]`) collapse via a stem-equivalence matcher that handles singular/plural and cross-inflection.
-- DCB parse no longer overflows the Windows main-thread stack — `PreviewSession::load` runs the parse on a worker thread with an 8 MB stack.
+- Blueprint item names no longer come back empty — the patcher's datacore extraction now passes a populated locale into the `DisplayNameCache` build.
+- Ship encounter candidates and blueprint pools resolve correctly — required `sc-extract` feature flags (`contracts`, `servicebeacon`, `entityclassdefinition`) are now opted in explicitly so they propagate across the git workspace boundary.
 
 ### Removed
-- Old per-slot tag rendering — tags moved into the aggregated cargo-info summary at the end of the encounters block.
-- `shorten_ship_name` helper (replaced by inline `strip_manufacturer` since manufacturer-grouped rendering was reverted).
+- Per-slot inline tag rendering on ship encounters — tags now aggregate into the single summary line at the end of the encounters block.
 
 ## [0.2.2] - 2026-04-09
 
