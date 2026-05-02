@@ -5,6 +5,9 @@ description = "Star Citizen Localization Patcher"
 authors = ["Valerie"]
 license = "MIT"
 edition = "2024"
+# `cargo run` (and Tauri's dev/build commands) target the Tauri shell.
+# `preview_cli` and `preview_tui` are explicit-`--bin` debugging tools.
+default-run = "sc-langpatch"
 
 [lib]
 name = "sc_langpatch_lib"
@@ -31,12 +34,53 @@ regex = "1"
 toml = "0.8"
 dirs = "6"
 glob-match = "0.2"
-svarog-p4k = { git = "https://github.com/19h/svarog.git" }
-svarog-datacore = { git = "https://github.com/19h/svarog.git" }
+svarog-p4k = { git = "https://github.com/19h/Svarog.git", rev = "ce06ec67" }
+svarog-datacore = { git = "https://github.com/19h/Svarog.git", rev = "ce06ec67" }
+sc-installs = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.2.0" }
+# sc-extract feature flags gate which DCB record types the generated
+# decoder materialises at parse time. Without these, the registries
+# sc-contracts builds (BlueprintPoolRegistry, ShipRegistry,
+# RewardCurrencyCatalog) silently come back empty — exactly the
+# "empty BP pool / no ship candidates" failure mode we hit on first
+# v0.2.0 run. sc-contracts requests the same features transitively,
+# but explicit opt-in here is robust to workspace-feature-propagation
+# quirks across git deps.
+sc-extract = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.2.0", features = ["contracts", "servicebeacon", "entityclassdefinition"] }
+sc-weapons = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.2.0" }
+sc-contracts = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.2.0" }
 chrono = "0.4.44"
+ureq = { version = "2", default-features = false, features = ["tls"] }
+
+# Interactive preview TUI dep — used only by `src/bin/preview_tui.rs`.
+# Optional: not pulled in for the Tauri binary.
+superlighttui = "0.19"
+
+# Local svarog override — mirrors sc-holotable's workspace patch. Treats
+# `DataCoreReference::is_null` `instance_index == -1` as a null sentinel.
+# Drop once the fix lands upstream and the pinned rev above is bumped.
+[patch."https://github.com/19h/Svarog.git"]
+svarog-common = { path = "E:/repros/Svarog/crates/svarog-common" }
+svarog-datacore = { path = "E:/repros/Svarog/crates/svarog-datacore" }
+svarog-p4k = { path = "E:/repros/Svarog/crates/svarog-p4k" }
+
+# Mirror sc-holotable's workspace-internal profile override (their
+# Cargo.toml:71-72 pins opt-level=1 for release). We extend it to dev
+# too — without the optimization the generated record_store.rs match
+# statements make dev-build Datacore parsing take minutes, long enough
+# to matter in the normal edit → test loop. opt-level=1 is enough to
+# skip the expensive LLVM passes on the giant matches; higher levels
+# don't materially help here.
+[profile.dev.package.sc-extract-generated]
+opt-level = 1
+
+[profile.dev.package.svarog-datacore]
+opt-level = 1
 
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+[profile.release.package.sc-extract-generated]
+opt-level = 1

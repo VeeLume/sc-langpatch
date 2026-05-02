@@ -28,6 +28,14 @@ pub fn builtin_modules() -> Vec<Box<dyn Module>> {
     modules.push(Box::new(mission_enhancer::MissionEnhancer));
     modules.push(Box::new(weapon_enhancer::WeaponEnhancer));
 
+    // Test / debug modules — only included in dev builds. Disable
+    // in the UI when not actively validating in-game rendering.
+    #[cfg(debug_assertions)]
+    modules.push(Box::new(toml_module::TomlModule::from_embedded(
+        "test_em_colors",
+        include_str!("toml/test_em_colors.toml"),
+    )));
+
     modules
 }
 

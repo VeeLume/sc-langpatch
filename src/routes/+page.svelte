@@ -10,12 +10,14 @@
   import { ask } from "@tauri-apps/plugin-dialog";
   import { relaunch } from "@tauri-apps/plugin-process";
   import InstallationList from "$lib/InstallationList.svelte";
+  import LanguagePack from "$lib/LanguagePack.svelte";
   import ModuleList from "$lib/ModuleList.svelte";
   import PatchResults from "$lib/PatchResults.svelte";
 
   let installations = $state<Installation[]>([]);
   let selectedInstalls = $state<Set<string>>(new Set());
   let modules = $state<ModuleInfo[]>([]);
+  let languagePack = $state<string | null>(null);
   let results = $state<PatchResult[]>([]);
   let removeResults = $state<RemoveResult[]>([]);
   let loading = $state(true);
@@ -23,8 +25,6 @@
   let removing = $state(false);
   let error = $state<string | null>(null);
   let updating = $state(false);
-
-  let moduleList = $state<ModuleList>();
 
   async function checkForUpdates() {
     try {
@@ -45,18 +45,32 @@
     }
   }
 
+  let channelsLoaded = $state(false);
+
   async function init() {
     try {
       const installResult = await commands.getInstallations();
+      const persistedChannels = await commands.getSelectedChannels();
       if (installResult.status === "error") {
         error = installResult.error;
         installations = [];
       } else {
         installations = installResult.data;
-        selectedInstalls = new Set(installResult.data.map((i) => i.channel));
+        const discovered = installResult.data.map((i) => i.channel);
+        if (persistedChannels.length === 0) {
+          // First run — select everything by default
+          selectedInstalls = new Set(discovered);
+        } else {
+          // Only keep channels that are actually discovered
+          const discoveredSet = new Set(discovered);
+          selectedInstalls = new Set(
+            persistedChannels.filter((c) => discoveredSet.has(c))
+          );
+        }
       }
       modules = await commands.getModules();
-      moduleList?.initOptions(modules);
+      languagePack = await commands.getLanguagePack();
+      channelsLoaded = true;
     } catch (e) {
       error = String(e);
     } finally {
@@ -64,7 +78,7 @@
     }
   }
 
-  function toggleInstall(channel: string) {
+  async function toggleInstall(channel: string) {
     const next = new Set(selectedInstalls);
     if (next.has(channel)) {
       next.delete(channel);
@@ -72,6 +86,9 @@
       next.add(channel);
     }
     selectedInstalls = next;
+    if (channelsLoaded) {
+      await commands.setSelectedChannels([...next]);
+    }
   }
 
   async function doPatch() {
@@ -140,8 +157,12 @@
       onToggle={toggleInstall}
     />
 
+    <LanguagePack
+      path={languagePack}
+      onChange={(p) => (languagePack = p)}
+    />
+
     <ModuleList
-      bind:this={moduleList}
       {modules}
       onModulesChanged={(m) => (modules = m)}
     />

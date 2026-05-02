@@ -40,11 +40,14 @@ pub mod fixtures {
     }
 
     /// Apply a set of patches to synthetic INI content and return the result.
+    /// Each (key, op) tuple pushes onto that key's op stack in order, so
+    /// callers can simulate multi-module composition by listing the same
+    /// key multiple times.
     pub fn apply(ini: &str, patches: &[(&str, PatchOp)]) -> String {
-        let map: HashMap<String, PatchOp> = patches
-            .iter()
-            .map(|(k, op)| (k.to_string(), op.clone()))
-            .collect();
+        let mut map: HashMap<String, Vec<PatchOp>> = HashMap::new();
+        for (k, op) in patches {
+            map.entry(k.to_string()).or_default().push(op.clone());
+        }
         merge::apply_patches(ini, &map)
     }
 }
