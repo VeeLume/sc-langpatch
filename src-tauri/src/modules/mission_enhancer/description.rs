@@ -9,7 +9,7 @@
 //! - Variants section, regions differ → drop `Region` block; region appears as variant label.
 
 use sc_contracts::{BlueprintReward, Cooldowns, Mission, MissionIndex, RewardAmount};
-use sc_extract::TagTree;
+use sc_extract::{LocaleMap, LocalizedItemCache, TagTree};
 use svarog_datacore::DataCoreDatabase;
 
 use super::encounters;
@@ -40,6 +40,8 @@ pub fn render(
     facts: &PoolFacts<'_>,
     index: &MissionIndex,
     db: &DataCoreDatabase,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
     manufacturer_prefixes: &[String],
     desc_key: &str,
     opts: DescOptions,
@@ -62,15 +64,15 @@ pub fn render(
     let mut blocks: Vec<String> = Vec::new();
 
     if !facts.has_variants() {
-        push_singleton_blocks(&mut blocks, head, facts, index, manufacturer_prefixes, opts);
+        push_singleton_blocks(&mut blocks, head, facts, index, cache, locale, manufacturer_prefixes, opts);
     } else {
-        let (labels, stats) = variants::resolve(&facts.members, &index.localities, db);
-        let groups = group_by_diff_lines(facts, &labels, &index.tag_tree, manufacturer_prefixes, opts);
+        let (labels, stats) = variants::resolve(&facts.members, &index.localities, db, locale);
+        let groups = group_by_diff_lines(facts, &labels, &index.tag_tree, index, cache, locale, manufacturer_prefixes, opts);
         if groups.len() <= 1 {
             // Functionally one variant — the data-level divergence
             // didn't produce different rendered output. Render as a
             // singleton using the head member's full info.
-            push_singleton_blocks(&mut blocks, head, facts, index, manufacturer_prefixes, opts);
+            push_singleton_blocks(&mut blocks, head, facts, index, cache, locale, manufacturer_prefixes, opts);
         } else {
             push_variants_blocks(
                 &mut blocks,
@@ -79,6 +81,8 @@ pub fn render(
                 &labels,
                 &stats,
                 index,
+                cache,
+                locale,
                 manufacturer_prefixes,
                 desc_key,
                 opts,
@@ -99,16 +103,18 @@ fn push_singleton_blocks(
     head: &Mission,
     facts: &PoolFacts<'_>,
     index: &MissionIndex,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
     manufacturer_prefixes: &[String],
     opts: DescOptions,
 ) {
     if opts.blueprint_list
         && let Some(bp) = &head.rewards.blueprint
     {
-        blocks.push(blueprint_block(bp));
+        blocks.push(blueprint_block(bp, cache, locale));
     }
     if opts.mission_info
-        && let Some(info) = mission_info_block(head)
+        && let Some(info) = mission_info_block(head, &index.currency, cache, locale)
     {
         blocks.push(info);
     }
@@ -116,6 +122,9 @@ fn push_singleton_blocks(
         && let Some(enc) = encounter_block(
             head,
             &index.tag_tree,
+            &index.ships,
+            cache,
+            locale,
             manufacturer_prefixes,
             opts.cargo_info,
         )
@@ -138,6 +147,8 @@ fn push_variants_blocks(
     labels: &[VariantLabel<'_>],
     stats: &variants::ResolutionStats,
     index: &MissionIndex,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
     manufacturer_prefixes: &[String],
     desc_key: &str,
     opts: DescOptions,
@@ -147,10 +158,10 @@ fn push_variants_blocks(
         && matches!(facts.blueprint_state, BlueprintState::AllSamePool)
         && let Some(bp) = facts.members.first().and_then(|m| m.rewards.blueprint.as_ref())
     {
-        blocks.push(blueprint_block(bp));
+        blocks.push(blueprint_block(bp, cache, locale));
     }
     if opts.mission_info
-        && let Some(info) = unanimous_mission_info_block(facts)
+        && let Some(info) = unanimous_mission_info_block(facts, &index.currency, cache, locale)
     {
         blocks.push(info);
     }
@@ -160,6 +171,9 @@ fn push_variants_blocks(
         && let Some(enc) = encounter_block(
             head,
             &index.tag_tree,
+            &index.ships,
+            cache,
+            locale,
             manufacturer_prefixes,
             opts.cargo_info,
         )
@@ -181,23 +195,32 @@ fn push_variants_blocks(
 
 // ── Top-section blocks (singleton path) ────────────────────────────────────
 
-fn blueprint_block(bp: &BlueprintReward) -> String {
+fn blueprint_block(
+    bp: &BlueprintReward,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
+) -> String {
     let mut s = header("Potential Blueprints");
     if bp.chance < 1.0 {
         s.push_str(&format!(" ({}% chance)", (bp.chance * 100.0) as i32));
     }
     for item in &bp.items {
-        if item.display_name.is_empty() {
+        let Some(name) = item.display_name(cache, locale) else {
             continue;
-        }
+        };
         s.push_str(NEWLINE);
-        s.push_str(&bullet(&item.display_name));
+        s.push_str(&bullet(name));
     }
     s
 }
 
-fn mission_info_block(mission: &Mission) -> Option<String> {
-    let lines = mission_info_lines(mission);
+fn mission_info_block(
+    mission: &Mission,
+    currency: &sc_contracts::RewardCurrencyCatalog,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
+) -> Option<String> {
+    let lines = mission_info_lines(mission, currency, cache, locale);
     if lines.is_empty() {
         return None;
     }
@@ -208,7 +231,12 @@ fn mission_info_block(mission: &Mission) -> Option<String> {
     ))
 }
 
-fn mission_info_lines(mission: &Mission) -> Vec<String> {
+fn mission_info_lines(
+    mission: &Mission,
+    currency: &sc_contracts::RewardCurrencyCatalog,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
+) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     if let Some(line) = cooldown_line(&mission.availability.cooldowns, mission.availability.has_personal_cooldown) {
         lines.push(line);
@@ -216,7 +244,7 @@ fn mission_info_lines(mission: &Mission) -> Vec<String> {
     if let Some(line) = rep_line(&mission.rewards.reputation) {
         lines.push(line);
     }
-    if let Some(line) = scrip_line(&mission.rewards.scrip) {
+    if let Some(line) = scrip_line(&mission.rewards.scrip, currency, cache, locale) {
         lines.push(line);
     }
     if let Some(line) = uec_line(&mission.rewards.uec) {
@@ -297,19 +325,28 @@ fn rep_line(reps: &[sc_contracts::RepReward]) -> Option<String> {
     }
 }
 
-fn scrip_line(scrip: &[sc_contracts::ScripReward]) -> Option<String> {
+fn scrip_line(
+    scrip: &[sc_contracts::ScripReward],
+    currency: &sc_contracts::RewardCurrencyCatalog,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
+) -> Option<String> {
     if scrip.is_empty() {
         return None;
     }
     // Render one entry per distinct currency (MG / Council); each
     // amount is summed within its currency.
     use std::collections::BTreeMap;
-    let mut by_name: BTreeMap<&str, i32> = BTreeMap::new();
+    let mut by_name: BTreeMap<String, i32> = BTreeMap::new();
     for s in scrip {
         if s.amount <= 0 {
             continue;
         }
-        *by_name.entry(s.display_name.as_str()).or_insert(0) += s.amount;
+        let name = currency
+            .display_name(&s.currency_guid, cache, locale)
+            .unwrap_or("")
+            .to_string();
+        *by_name.entry(name).or_insert(0) += s.amount;
     }
     if by_name.is_empty() {
         return None;
@@ -337,6 +374,9 @@ fn uec_line(uec: &RewardAmount) -> Option<String> {
 fn encounter_block(
     mission: &Mission,
     tree: &TagTree,
+    ships: &sc_contracts::ShipRegistry,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
     manufacturer_prefixes: &[String],
     include_cargo: bool,
 ) -> Option<String> {
@@ -346,6 +386,9 @@ fn encounter_block(
     let rendering = encounters::render(
         &mission.encounters,
         tree,
+        ships,
+        cache,
+        locale,
         manufacturer_prefixes,
         include_cargo,
     );
@@ -410,7 +453,12 @@ fn region_block(facts: &PoolFacts<'_>) -> Option<String> {
 
 // ── Variants section (multi-member, mixed axes) ────────────────────────────
 
-fn unanimous_mission_info_block(facts: &PoolFacts<'_>) -> Option<String> {
+fn unanimous_mission_info_block(
+    facts: &PoolFacts<'_>,
+    currency: &sc_contracts::RewardCurrencyCatalog,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
+) -> Option<String> {
     let head = facts.members.first()?;
     let mut lines: Vec<String> = Vec::new();
     if facts.cooldowns_consistent
@@ -427,7 +475,7 @@ fn unanimous_mission_info_block(facts: &PoolFacts<'_>) -> Option<String> {
         lines.push(line);
     }
     if facts.scrip_consistent
-        && let Some(line) = scrip_line(&head.rewards.scrip)
+        && let Some(line) = scrip_line(&head.rewards.scrip, currency, cache, locale)
     {
         lines.push(line);
     }
@@ -458,16 +506,20 @@ pub(super) struct DiffGroup<'a> {
 /// Many pools have N missions that share the same generator output
 /// (e.g. Foxwell_SecurityPatrol × 4 — all identical to the player);
 /// grouping prevents rendering N copies of the same block.
+#[allow(clippy::too_many_arguments)]
 fn group_by_diff_lines<'a>(
     facts: &PoolFacts<'_>,
     labels: &'a [VariantLabel<'a>],
     tree: &TagTree,
+    index: &MissionIndex,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
     manufacturer_prefixes: &[String],
     opts: DescOptions,
 ) -> Vec<DiffGroup<'a>> {
     let mut groups: Vec<DiffGroup<'a>> = Vec::new();
     for v in labels {
-        let diff = variant_diff_lines(facts, v.mission, manufacturer_prefixes, opts, tree);
+        let diff = variant_diff_lines(facts, v.mission, index, cache, locale, manufacturer_prefixes, opts, tree);
         match groups.iter_mut().find(|g| g.diff_lines == diff) {
             Some(existing) => {
                 if !existing.labels.iter().any(|l| l.label == v.label) {
@@ -639,9 +691,13 @@ fn combine_group_labels(labels: &[&VariantLabel<'_>]) -> String {
     rendered.join(" / ")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn variant_diff_lines(
     facts: &PoolFacts<'_>,
     mission: &Mission,
+    index: &MissionIndex,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
     manufacturer_prefixes: &[String],
     opts: DescOptions,
     tree: &TagTree,
@@ -666,7 +722,7 @@ fn variant_diff_lines(
         }
     }
     if opts.mission_info && !facts.scrip_consistent {
-        match scrip_line(&mission.rewards.scrip) {
+        match scrip_line(&mission.rewards.scrip, &index.currency, cache, locale) {
             Some(line) => lines.push(line),
             None => lines.push("No scrip".to_string()),
         }
@@ -692,8 +748,7 @@ fn variant_diff_lines(
                 let names: Vec<&str> = bp
                     .items
                     .iter()
-                    .map(|i| i.display_name.as_str())
-                    .filter(|s| !s.is_empty())
+                    .filter_map(|i| i.display_name(cache, locale))
                     .collect();
                 if names.is_empty() {
                     lines.push("Blueprints: (pool empty)".to_string());
@@ -733,6 +788,9 @@ fn variant_diff_lines(
         let rendering = encounters::render(
             &mission.encounters,
             tree,
+            &index.ships,
+            cache,
+            locale,
             manufacturer_prefixes,
             opts.cargo_info,
         );

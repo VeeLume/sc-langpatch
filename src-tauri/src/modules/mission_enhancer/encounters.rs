@@ -21,8 +21,8 @@
 //! NPC encounters bypass this pipeline and collapse into a single
 //! `NPCs: N` total — see [`count_npcs`].
 
-use sc_contracts::{Encounter, EntitySlot, NpcEncounter, ShipCandidate, ShipSlot, TagBag};
-use sc_extract::TagTree;
+use sc_contracts::{Encounter, EntitySlot, NpcEncounter, ShipRegistry, ShipSlot, TagBag};
+use sc_extract::{LocaleMap, LocalizedItemCache, TagTree};
 
 use super::format::{collapse_variants, pretty_identifier};
 use crate::formatter_helpers::{apply_color, Color, NEWLINE};
@@ -47,6 +47,9 @@ pub struct EncounterRendering {
 pub fn render(
     encounters: &[Encounter],
     tree: &TagTree,
+    ships: &ShipRegistry,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
     manufacturer_prefixes: &[String],
     include_cargo: bool,
 ) -> EncounterRendering {
@@ -68,6 +71,9 @@ pub fn render(
                         if let Some(line) = build_ship_line(
                             slot,
                             tree,
+                            ships,
+                            cache,
+                            locale,
                             manufacturer_prefixes,
                             include_cargo,
                             encounter_label.clone(),
@@ -405,15 +411,19 @@ enum BodyKind {
     Entities(i32),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_ship_line(
     slot: &ShipSlot,
     tree: &TagTree,
+    ships_reg: &ShipRegistry,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
     manufacturer_prefixes: &[String],
     include_cargo: bool,
     encounter_label: String,
     phase_label: String,
 ) -> Option<SlotLine> {
-    let ships = ship_list_for_slot(slot, manufacturer_prefixes);
+    let ships = ship_list_for_slot(slot, ships_reg, cache, locale, manufacturer_prefixes);
     let body = if !ships.is_empty() {
         BodyKind::Ships(ships)
     } else if let Some(role) = role_hint_for_empty_slot(&slot.positive, tree) {
@@ -491,17 +501,22 @@ fn build_entity_line(
 /// same-hull variants.
 fn ship_list_for_slot(
     slot: &ShipSlot,
+    ships: &ShipRegistry,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
     manufacturer_prefixes: &[String],
 ) -> Vec<String> {
     let mut entries: Vec<(String, i32)> = Vec::new();
     for c in &slot.candidates {
-        let ShipCandidate { display_name, size, .. } = c;
+        let Some(display_name) = ships.display_name(&c.entity_guid, cache, locale) else {
+            continue;
+        };
         if display_name.is_empty() {
             continue;
         }
         let short = strip_manufacturer(manufacturer_prefixes, display_name);
         if !entries.iter().any(|(n, _)| n == &short) {
-            entries.push((short, *size));
+            entries.push((short, c.size));
         }
     }
     entries.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));

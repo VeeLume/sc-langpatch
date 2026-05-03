@@ -315,27 +315,18 @@ fn patch_installation(
 
     // Datacore extraction goes through sc-extract's staged pipeline.
     //
-    // We use `AssetConfig::standard()` (locale on) rather than `minimal()`
-    // because `Datacore::parse` builds [`DisplayNameCache`] eagerly from
-    // `asset_data.locale`, and that cache is what every downstream
-    // resolver (BlueprintPoolRegistry item names, ShipRegistry display
-    // names, etc.) reaches into for human-readable text. With
-    // `minimal()` the cache comes back empty and every resolved
-    // entity name turns into the empty string — the "0 with
-    // display_name" failure mode we saw when modules like
-    // `mission_enhancer` started leaning on these caches.
-    //
-    // The trade-off: `DisplayNameCache` is baked from BASE English at
-    // parse time, so when a community language pack is overlaid below,
-    // those baked names won't pick up the translations. Module-level
-    // INI lookups *do* see the overlaid strings (we hand them the
-    // post-overlay [`LocaleMap`] further down), so player-visible
-    // patches still translate correctly — but cross-record name
-    // resolution (e.g. blueprint pool → entity → name) stays English.
-    // Acceptable until / unless we add a mechanism to rebuild the
-    // cache against the post-overlay locale.
+    // `AssetConfig::minimal()` skips the parse-time `LocaleMap` build:
+    // post the v0.3.0 localization restructure (see sc-holotable
+    // `docs/localization.md`), `Datacore::parse` no longer consumes
+    // `asset_data.locale` — the [`LocalizedItemCache`] stores keys
+    // only and resolution happens at the call site through whichever
+    // `LocaleMap` is current. We pass holotable types the
+    // post-overlay [`LocaleMap`] built below, so cross-record name
+    // resolution (blueprint pool → entity → name, ship-spawn lists,
+    // currency labels) automatically picks up the community language
+    // pack rather than getting frozen to base English.
     let datacore: Option<Datacore> = if needs.datacore {
-        match AssetData::extract(&assets, &AssetConfig::standard())
+        match AssetData::extract(&assets, &AssetConfig::minimal())
             .and_then(|d| Datacore::parse(&assets, &d, &DatacoreConfig::standard()))
         {
             Ok(dc) => Some(dc),
@@ -370,10 +361,14 @@ fn patch_installation(
     }
 
     // Build the LocaleMap that holotable modules see *after* the community
-    // language pack is overlaid. This way `LocaleKey` resolution by sc-contracts
-    // / sc-weapons returns translated names — annotations stay consistent
-    // with the player-facing strings the language pack already rewrote.
-    // Rebuilt once now (post-overlay, pre-our-patches) and held for both phases.
+    // language pack is overlaid. Per the v0.3.0 localization restructure,
+    // every sc-holotable resolver (`BlueprintItem::display_name`,
+    // `ShipRegistry::display_name`, `RewardCurrencyCatalog::display_name`,
+    // `LocalityView::region_label`, etc.) takes a `&LocaleMap` at the call
+    // site and resolves through whatever's current — so this post-overlay
+    // map drives both the INI patch lookups *and* the cross-record name
+    // resolutions consistently. Rebuilt once now (post-overlay,
+    // pre-our-patches) and held for both phases.
     let locale: Option<LocaleMap> = if needs.locale {
         let map = merge::parse_ini(&ini_content);
         let mut lm = LocaleMap::new();

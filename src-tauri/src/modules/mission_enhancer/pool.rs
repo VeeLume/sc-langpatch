@@ -8,7 +8,7 @@
 use std::collections::HashSet;
 
 use sc_contracts::{LocalityRegistry, Mission, MissionIndex};
-use sc_extract::Guid;
+use sc_extract::{Guid, LocaleMap};
 use svarog_datacore::DataCoreDatabase;
 
 use super::crimestat::{self, CrimestatRisk};
@@ -84,6 +84,8 @@ impl<'a> PoolFacts<'a> {
         index: &'a MissionIndex,
         ids: &'a [Guid],
         db: &DataCoreDatabase,
+        _localities: &LocalityRegistry,
+        locale: &LocaleMap,
     ) -> Self {
         let members: Vec<&'a Mission> = index.iter_pool(ids).collect();
 
@@ -101,7 +103,7 @@ impl<'a> PoolFacts<'a> {
         let encounters_consistent = index.encounters_shape_consistent(ids);
         let mission_span_consistent = index.mission_span_consistent(ids);
 
-        let region_labels = collect_region_labels(&members, &index.localities);
+        let region_labels = collect_region_labels(&members, &index.localities, locale);
 
         PoolFacts {
             members,
@@ -186,10 +188,14 @@ fn classify_crimestat(members: &[&Mission], db: &DataCoreDatabase) -> CrimestatS
     CrimestatState::Unanimous(current.unwrap_or(CrimestatRisk::None))
 }
 
-fn collect_region_labels(members: &[&Mission], localities: &LocalityRegistry) -> Vec<String> {
+fn collect_region_labels(
+    members: &[&Mission],
+    localities: &LocalityRegistry,
+    locale: &LocaleMap,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for m in members {
-        let label = region_label_for(m, localities);
+        let label = region_label_for(m, localities, locale);
         if !label.is_empty() && !out.contains(&label) {
             out.push(label);
         }
@@ -205,19 +211,25 @@ fn collect_region_labels(members: &[&Mission], localities: &LocalityRegistry) ->
 /// so bodies in the same system collapse into one entry. See
 /// [`merge_region_labels`] for the merge rules — same logic is also
 /// reused by the cross-mission group label combiner.
-pub fn region_label_for(mission: &Mission, localities: &LocalityRegistry) -> String {
-    let mut sources: Vec<&str> = Vec::new();
+pub fn region_label_for(
+    mission: &Mission,
+    localities: &LocalityRegistry,
+    locale: &LocaleMap,
+) -> String {
+    let mut sources: Vec<String> = Vec::new();
     for guid in &mission.mission_span {
         let Some(view) = localities.get(guid) else {
             continue;
         };
-        if !view.region_label.is_empty() {
-            sources.push(view.region_label.as_str());
+        let label = view.region_label(locale);
+        if !label.is_empty() {
+            sources.push(label);
         }
     }
     // Single-line context (used as variant labels), so join entries
     // with `" / "` rather than newlines.
-    merge_region_labels(&sources).join(" / ")
+    let refs: Vec<&str> = sources.iter().map(|s| s.as_str()).collect();
+    merge_region_labels(&refs).join(" / ")
 }
 
 /// Merge a slice of region labels into one entry per star system,

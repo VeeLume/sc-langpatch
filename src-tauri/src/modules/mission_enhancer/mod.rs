@@ -191,7 +191,8 @@ impl Module for MissionEnhancer {
             diagnostics: true,
         };
 
-        let index = MissionIndex::build(datacore, locale);
+        let index = MissionIndex::build(datacore);
+        let cache = &datacore.snapshot().localized_items;
         let manufacturer_prefixes = build_manufacturer_prefixes(datacore, locale);
 
         // Registry-population diagnostic. If any of these are zero,
@@ -211,7 +212,7 @@ impl Module for MissionEnhancer {
             .blueprints
             .iter()
             .flat_map(|p| p.items.iter())
-            .filter(|i| !i.display_name.is_empty())
+            .filter(|i| i.display_name(cache, locale).is_some())
             .count();
         eprintln!(
             "  [MissionEnhancer] registries — manufacturers={}, ships={}, blueprint_pools={} ({} items, {} with display_name), localities={}, missions={}",
@@ -237,7 +238,7 @@ impl Module for MissionEnhancer {
                 title_misses += 1;
                 continue;
             }
-            let facts = PoolFacts::build(&index, ids, db);
+            let facts = PoolFacts::build(&index, ids, db, &index.localities, locale);
             let tags = title::render(&facts, title_opts);
             if tags.is_empty() {
                 continue;
@@ -253,11 +254,13 @@ impl Module for MissionEnhancer {
                 desc_misses += 1;
                 continue;
             }
-            let facts = PoolFacts::build(&index, ids, db);
+            let facts = PoolFacts::build(&index, ids, db, &index.localities, locale);
             let suffix = description::render(
                 &facts,
                 &index,
                 db,
+                cache,
+                locale,
                 &manufacturer_prefixes,
                 key,
                 desc_opts,

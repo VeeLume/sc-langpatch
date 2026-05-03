@@ -91,7 +91,7 @@ impl PreviewSession {
             locale.set(k.as_str(), v.as_str());
         }
 
-        let index = MissionIndex::build(&datacore, &locale);
+        let index = MissionIndex::build(&datacore);
         let manufacturer_prefixes = MissionEnhancerInternals::build_manufacturer_prefixes(
             &datacore, &locale,
         );
@@ -114,12 +114,13 @@ impl PreviewSession {
     /// Snapshot of registry sizes for diagnostic output.
     pub fn registry_summary(&self) -> RegistrySummary {
         let total_bp_items: usize = self.index.blueprints.iter().map(|p| p.items.len()).sum();
+        let cache = &self.datacore.snapshot().localized_items;
         let resolved_bp_names: usize = self
             .index
             .blueprints
             .iter()
             .flat_map(|p| p.items.iter())
-            .filter(|i| !i.display_name.is_empty())
+            .filter(|i| i.display_name(cache, &self.locale).is_some())
             .count();
         RegistrySummary {
             manufacturers: self.manufacturer_prefixes.len(),
@@ -171,11 +172,20 @@ impl PreviewSession {
         opts: DescOptions,
     ) -> Option<String> {
         let base = self.ini.get(desc_key)?;
-        let facts = PoolFacts::build(&self.index, ids, self.db());
+        let cache = &self.datacore.snapshot().localized_items;
+        let facts = PoolFacts::build(
+            &self.index,
+            ids,
+            self.db(),
+            &self.index.localities,
+            &self.locale,
+        );
         let suffix = crate::modules::mission_enhancer::render_description(
             &facts,
             &self.index,
             self.db(),
+            cache,
+            &self.locale,
             &self.manufacturer_prefixes,
             desc_key,
             opts,
@@ -191,7 +201,13 @@ impl PreviewSession {
         opts: TitleOptions,
     ) -> Option<String> {
         let base = self.ini.get(title_key)?;
-        let facts = PoolFacts::build(&self.index, ids, self.db());
+        let facts = PoolFacts::build(
+            &self.index,
+            ids,
+            self.db(),
+            &self.index.localities,
+            &self.locale,
+        );
         let tags = crate::modules::mission_enhancer::render_title(&facts, opts);
         if tags.is_empty() {
             Some(base.clone())

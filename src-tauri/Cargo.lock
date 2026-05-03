@@ -861,6 +861,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer",
  "crypto-common",
+ "subtle",
 ]
 
 [[package]]
@@ -1657,6 +1658,15 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest",
+]
 
 [[package]]
 name = "html5ever"
@@ -2698,6 +2708,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df94ce210e5bc13cb6651479fa48d14f601d9858cfe0467f43ae157023b938d3"
 
 [[package]]
+name = "pbkdf2"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
+dependencies = [
+ "digest",
+ "hmac",
+]
+
+[[package]]
 name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3527,7 +3547,7 @@ dependencies = [
 [[package]]
 name = "sc-contracts"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.2.0#38ab78e56cff32494ab6404d5688a0168fd0f864"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.3.0#cbc2b5547e04624d37422bd9c8eabdb7031e625e"
 dependencies = [
  "sc-extract",
  "svarog-common",
@@ -3538,7 +3558,7 @@ dependencies = [
 [[package]]
 name = "sc-extract"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.2.0#38ab78e56cff32494ab6404d5688a0168fd0f864"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.3.0#cbc2b5547e04624d37422bd9c8eabdb7031e625e"
 dependencies = [
  "chrono",
  "encoding_rs",
@@ -3558,7 +3578,7 @@ dependencies = [
 [[package]]
 name = "sc-extract-generated"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.2.0#38ab78e56cff32494ab6404d5688a0168fd0f864"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.3.0#cbc2b5547e04624d37422bd9c8eabdb7031e625e"
 dependencies = [
  "svarog-common",
  "svarog-datacore",
@@ -3567,11 +3587,15 @@ dependencies = [
 [[package]]
 name = "sc-installs"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.2.0#38ab78e56cff32494ab6404d5688a0168fd0f864"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.3.0#cbc2b5547e04624d37422bd9c8eabdb7031e625e"
 dependencies = [
+ "aes",
+ "cbc",
+ "pbkdf2",
  "regex",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -3611,7 +3635,7 @@ dependencies = [
 [[package]]
 name = "sc-weapons"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.2.0#38ab78e56cff32494ab6404d5688a0168fd0f864"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.3.0#cbc2b5547e04624d37422bd9c8eabdb7031e625e"
 dependencies = [
  "sc-extract",
  "svarog-common",

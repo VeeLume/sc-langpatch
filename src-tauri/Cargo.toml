@@ -46,7 +46,7 @@ dirs = "6"
 glob-match = "0.2"
 svarog-p4k = { git = "https://github.com/19h/Svarog.git", rev = "ce06ec67" }
 svarog-datacore = { git = "https://github.com/19h/Svarog.git", rev = "ce06ec67" }
-sc-installs = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.2.0" }
+sc-installs = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.3.0" }
 # sc-extract feature flags gate which DCB record types the generated
 # decoder materialises at parse time. Without these, the registries
 # sc-contracts builds (BlueprintPoolRegistry, ShipRegistry,
@@ -55,9 +55,9 @@ sc-installs = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-h
 # v0.2.0 run. sc-contracts requests the same features transitively,
 # but explicit opt-in here is robust to workspace-feature-propagation
 # quirks across git deps.
-sc-extract = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.2.0", features = ["contracts", "servicebeacon", "entityclassdefinition"] }
-sc-weapons = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.2.0" }
-sc-contracts = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.2.0" }
+sc-extract = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.3.0", features = ["contracts", "servicebeacon", "entityclassdefinition"] }
+sc-weapons = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.3.0" }
+sc-contracts = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-holotable/v0.3.0" }
 chrono = "0.4.44"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 

@@ -1,41 +1,47 @@
+//! Weapon enhancer — pool-first INI patching driven by sc-weapons v0.3.0.
+//!
+//! Mirrors the shape of the mission-enhancer module: every patch goes
+//! through `WeaponPools` so that multiple weapon entities sharing one
+//! `global.ini` localization key collapse to a single prefix / stats
+//! block. This is the §0 fix from `feature-request-sc-weapons-langpatch.md`
+//! — without it, popular weapon families like `BEHR_LaserCannon_S7`
+//! accumulate twelve stacked `S{n}` prefixes and twelve `<EM4>Weapon
+//! Stats</EM4>` blocks, one per colliding ship-mounted variant.
+//!
+//! ## Collision resolution
+//!
+//! Two refinements on top of plain "first entity wins":
+//!
+//! 1. **Size-matching by loc key suffix.** A loc key like
+//!    `item_NameBEHR_LaserCannon_S7` carries the *intended* size in
+//!    its `_S{n}` suffix. The pool may contain several entities under
+//!    that key (CIG reuses entities for capital-ship hardpoints,
+//!    point-defence turrets, Idris/Javelin variants, …) at sizes 7,
+//!    8, 9, 12. We prefer the entities whose `.size` matches the
+//!    suffix — those are the ones the player actually sees in the
+//!    `_S7`-named market listing / loadout slot. Non-matching
+//!    variants get filtered out before stats rendering.
+//! 2. **Range rendering when matched stats diverge.** If even the
+//!    size-matched subset still has multiple entities and they
+//!    disagree on a stat, we render a range (`Alpha: 2306-6750`,
+//!    `S7-S12`, `[CS]` dropped when tracking signal differs). Honest
+//!    about the spread rather than silently picking one.
+//!
+//! Loc keys without a `_S{n}` suffix fall back to using every pool
+//! member (size-match is a no-op).
+
 use std::collections::HashMap;
 
 use anyhow::Result;
-use sc_weapons::{DamageSummary, SustainKind};
-use svarog_datacore::{DataCoreDatabase, Instance, Value};
+use sc_extract::generated::{EItemSubType, ESignatureType};
+use sc_extract::Guid;
+use sc_weapons::{
+    iter_missiles, iter_ship_weapons, DamageSummary, Missile, ShipWeapon, SustainKind,
+    TrackingProfile, WeaponPools,
+};
 
 use crate::formatter_helpers::{header, NEWLINE, PARAGRAPH_BREAK};
 use crate::module::{Module, ModuleContext, ModuleOption, OptionKind, PatchOp};
-
-// ── Missile data (legacy raw-svarog extraction) ─────────────────────────────
-//
-// TODO(sc-holotable): sc-weapons v1 only covers ship guns and FPS weapons.
-// Missiles / torpedoes need a feature request upstream before we can lift
-// this extraction into the shared crate.
-
-/// All data we extract per missile or torpedo.
-#[derive(Debug)]
-struct MissileData {
-    name_key: String,
-    desc_key: String,
-    size: i32,
-    sub_type: String,
-    tracking_signal: String,
-    damage_physical: f32,
-    damage_energy: f32,
-    damage_distortion: f32,
-    damage_thermal: f32,
-    damage_biochemical: f32,
-    damage_stun: f32,
-    speed: f32,
-    arm_time: f32,
-    lock_time: f32,
-    lock_angle: f32,
-    lock_range_min: f32,
-    lock_range_max: f32,
-}
-
-// ── Module ──────────────────────────────────────────────────────────────────
 
 pub struct WeaponEnhancer;
 
@@ -99,7 +105,7 @@ impl Module for WeaponEnhancer {
     }
 
     fn generate_patches(&self, ctx: &ModuleContext) -> Result<Vec<(String, PatchOp)>> {
-        let (Some(datacore), Some(db)) = (ctx.datacore, ctx.db) else {
+        let Some(datacore) = ctx.datacore else {
             return Ok(Vec::new());
         };
 
@@ -108,188 +114,465 @@ impl Module for WeaponEnhancer {
         let opt_weapon_stats = ctx.config.get_bool("weapon_stats").unwrap_or(true);
         let opt_missile_stats = ctx.config.get_bool("missile_stats").unwrap_or(true);
 
-        let mut patches = Vec::new();
-        let mut weapon_count = 0;
+        let ship_weapons: Vec<ShipWeapon> = iter_ship_weapons(datacore).collect();
+        let missiles: Vec<Missile> = iter_missiles(datacore).collect();
+        let pools = WeaponPools::build(&ship_weapons, &[], &missiles);
 
-        // ── Ship weapons via sc-weapons ──────────────────────────────────
-        for w in sc_weapons::iter_ship_weapons(datacore) {
-            let Some(loc) = loc_keys_for(db, w.guid) else {
+        let by_guid_ship: HashMap<Guid, &ShipWeapon> =
+            ship_weapons.iter().map(|w| (w.guid, w)).collect();
+        let by_guid_missile: HashMap<Guid, &Missile> =
+            missiles.iter().map(|m| (m.guid, m)).collect();
+
+        let mut patches: Vec<(String, PatchOp)> = Vec::new();
+        let mut weapon_name_hits = 0usize;
+        let mut weapon_desc_hits = 0usize;
+        let mut missile_name_hits = 0usize;
+        let mut missile_desc_hits = 0usize;
+
+        // ── Name pool pass ──────────────────────────────────────────
+        for (name_key, guids) in &pools.name_key {
+            let key = name_key.stripped();
+            if !ctx.ini.contains_key(key) {
+                continue;
+            }
+            let target_size = parse_size_from_key(key);
+            let ships = matched_ships(guids, &by_guid_ship, target_size);
+            let mssls = matched_missiles(guids, &by_guid_missile, target_size);
+
+            let prefix = if !ships.is_empty() {
+                ship_name_prefix(&ships, opt_size_prefix)
+            } else if !mssls.is_empty() {
+                missile_name_prefix(&mssls, opt_size_prefix, opt_missile_type)
+            } else {
                 continue;
             };
-            if !ctx.ini.contains_key(&loc.name_key) {
+            if prefix.is_empty() {
                 continue;
             }
-            weapon_count += 1;
-
-            // Name prefix: size
-            if opt_size_prefix && w.size > 0 {
-                patches.push((
-                    loc.name_key.clone(),
-                    PatchOp::Prefix(format!("S{} ", w.size)),
-                ));
-            }
-
-            // Description suffix: weapon stats
-            if opt_weapon_stats
-                && !loc.desc_key.is_empty()
-                && ctx.ini.contains_key(&loc.desc_key)
-            {
-                let mut lines = Vec::new();
-
-                if let Some(dmg) = w.damage {
-                    let alpha = dmg.total();
-                    if alpha > 0.0 {
-                        lines.push(format!(
-                            "Alpha: {:.0} ({})",
-                            alpha,
-                            damage_breakdown(&dmg)
-                        ));
-                    }
-                }
-
-                // Penetration — not in sc-weapons v1. TODO(sc-holotable):
-                // request ShipWeapon.penetration_m exposed on the model.
-                if let Some(pen) = legacy_penetration(db, w.guid)
-                    && pen > 0.0
-                {
-                    lines.push(format!("Penetration: {pen:.2}m"));
-                }
-
-                if let Some(speed) = w.ammo_speed
-                    && speed > 0.0
-                {
-                    lines.push(format!("Projectile Speed: {speed:.0} m/s"));
-                }
-
-                // Ballistic weapons: physical round count.
-                if let Some(mag) = w.total_ammo
-                    && mag > 0
-                {
-                    lines.push(format!("Ammo: {mag}"));
-                }
-                // Energy weapons: capacitor size from the energy sustain model.
-                if let SustainKind::Energy(ref e) = w.sustain
-                    && e.max_ammo_load > 0.0
-                {
-                    lines.push(format!("Capacitor: {:.0}", e.max_ammo_load));
-                }
-
-                if !lines.is_empty() {
-                    let stats_str = lines
-                        .iter()
-                        .map(|l| format!("{NEWLINE}{l}"))
-                        .collect::<String>();
-                    let suffix = format!(
-                        "{PARAGRAPH_BREAK}{}{stats_str}",
-                        header("Weapon Stats")
-                    );
-                    patches.push((loc.desc_key.clone(), PatchOp::Suffix(suffix)));
-                }
+            patches.push((key.to_string(), PatchOp::Prefix(prefix)));
+            if !ships.is_empty() {
+                weapon_name_hits += 1;
+            } else {
+                missile_name_hits += 1;
             }
         }
 
-        // ── Missile/torpedo patches (raw-svarog, sc-weapons doesn't cover) ─
-        let missiles = extract_missiles(db, ctx.ini);
-        for m in &missiles {
-            if m.name_key.is_empty() || !ctx.ini.contains_key(&m.name_key) {
+        // ── Description pool pass ──────────────────────────────────
+        let mut skipped_desc_is_name = 0usize;
+        for (desc_key, guids) in &pools.desc_key {
+            let key = desc_key.stripped();
+            if !ctx.ini.contains_key(key) {
                 continue;
             }
-
-            let mut prefix_parts = Vec::new();
-            if opt_size_prefix && m.size > 0 {
-                prefix_parts.push(format!("S{}", m.size));
+            // CIG data quirk: some weapons (e.g. VNCL_PlasmaCannon S2/S3)
+            // have no dedicated `item_Desc*` entry, so the entity's
+            // `Localization.Description` field falls back to its
+            // `Localization.Name` key. Patching such a key with a
+            // paragraph-break + stats block corrupts the name field —
+            // skip it.
+            if pools.name_key.contains_key(desc_key) {
+                skipped_desc_is_name += 1;
+                continue;
             }
-            if opt_missile_type && !m.tracking_signal.is_empty() {
-                let tag = match m.tracking_signal.as_str() {
-                    "Infrared" => "IR",
-                    "Electromagnetic" => "EM",
-                    "CrossSection" => "CS",
-                    other => other,
-                };
-                prefix_parts.push(format!("[{tag}]"));
+            let target_size = parse_size_from_key(key);
+            let ships = matched_ships(guids, &by_guid_ship, target_size);
+            let mssls = matched_missiles(guids, &by_guid_missile, target_size);
+
+            let suffix = if !ships.is_empty() && opt_weapon_stats {
+                ship_stats_suffix(&ships)
+            } else if !mssls.is_empty() && opt_missile_stats {
+                missile_stats_suffix(&mssls)
+            } else {
+                String::new()
+            };
+            if suffix.is_empty() {
+                continue;
             }
-            if !prefix_parts.is_empty() {
-                let prefix = format!("{} ", prefix_parts.join(" "));
-                patches.push((m.name_key.clone(), PatchOp::Prefix(prefix)));
-            }
-
-            if opt_missile_stats && !m.desc_key.is_empty() && ctx.ini.contains_key(&m.desc_key) {
-                let mut lines = Vec::new();
-
-                let total_dmg = m.damage_physical
-                    + m.damage_energy
-                    + m.damage_distortion
-                    + m.damage_thermal
-                    + m.damage_biochemical
-                    + m.damage_stun;
-                if total_dmg > 0.0 {
-                    let mut parts = Vec::new();
-                    if m.damage_physical > 0.0 {
-                        parts.push(format!("{:.0} phys", m.damage_physical));
-                    }
-                    if m.damage_energy > 0.0 {
-                        parts.push(format!("{:.0} energy", m.damage_energy));
-                    }
-                    if m.damage_distortion > 0.0 {
-                        parts.push(format!("{:.0} dist", m.damage_distortion));
-                    }
-                    if m.damage_thermal > 0.0 {
-                        parts.push(format!("{:.0} therm", m.damage_thermal));
-                    }
-                    if m.damage_biochemical > 0.0 {
-                        parts.push(format!("{:.0} bio", m.damage_biochemical));
-                    }
-                    if m.damage_stun > 0.0 {
-                        parts.push(format!("{:.0} stun", m.damage_stun));
-                    }
-                    lines.push(format!("Damage: {:.0} ({})", total_dmg, parts.join(", ")));
-                }
-
-                if m.speed > 0.0 {
-                    lines.push(format!("Speed: {:.0} m/s", m.speed));
-                }
-                if m.arm_time > 0.0 {
-                    lines.push(format!("Arm Time: {:.2}s", m.arm_time));
-                }
-                if m.lock_time > 0.0 {
-                    lines.push(format!("Lock Time: {:.1}s", m.lock_time));
-                }
-                if m.lock_angle > 0.0 {
-                    lines.push(format!("Lock Angle: {:.0}°", m.lock_angle));
-                }
-                if m.lock_range_min > 0.0 || m.lock_range_max > 0.0 {
-                    lines.push(format!(
-                        "Lock Range: {:.0}m - {:.0}m",
-                        m.lock_range_min, m.lock_range_max
-                    ));
-                }
-
-                if !lines.is_empty() {
-                    let stats_str = lines
-                        .iter()
-                        .map(|l| format!("{NEWLINE}{l}"))
-                        .collect::<String>();
-                    let label = if m.sub_type == "Torpedo" {
-                        "Torpedo Stats"
-                    } else {
-                        "Missile Stats"
-                    };
-                    let suffix =
-                        format!("{PARAGRAPH_BREAK}{}{stats_str}", header(label));
-                    patches.push((m.desc_key.clone(), PatchOp::Suffix(suffix)));
-                }
+            patches.push((key.to_string(), PatchOp::Suffix(suffix)));
+            if !ships.is_empty() {
+                weapon_desc_hits += 1;
+            } else {
+                missile_desc_hits += 1;
             }
         }
 
         eprintln!(
-            "  [WeaponEnhancer] {weapon_count} weapons, {} missiles",
-            missiles.len()
+            "  [WeaponEnhancer] {} ship weapons / {} missiles materialized; \
+             {} weapon-name pools, {} weapon-desc pools, \
+             {} missile-name pools, {} missile-desc pools patched \
+             (skipped {} desc keys that also serve as name keys)",
+            ship_weapons.len(),
+            missiles.len(),
+            weapon_name_hits,
+            weapon_desc_hits,
+            missile_name_hits,
+            missile_desc_hits,
+            skipped_desc_is_name,
         );
+
         Ok(patches)
     }
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
+// ── Pool-member selection ───────────────────────────────────────────────────
+
+/// Filter ship-pool members by size-match against the loc-key suffix.
+/// Returns the size-matching subset; falls back to "all ship members"
+/// when no member matches (e.g. loc key has no `_S{n}` suffix, or
+/// every variant has a different size from the suffix).
+fn matched_ships<'a>(
+    guids: &[Guid],
+    by_guid: &'a HashMap<Guid, &'a ShipWeapon>,
+    target_size: Option<i32>,
+) -> Vec<&'a ShipWeapon> {
+    let all: Vec<&ShipWeapon> = guids.iter().filter_map(|g| by_guid.get(g).copied()).collect();
+    match target_size {
+        Some(s) => {
+            let matched: Vec<&ShipWeapon> = all.iter().copied().filter(|w| w.size == s).collect();
+            if matched.is_empty() { all } else { matched }
+        }
+        None => all,
+    }
+}
+
+fn matched_missiles<'a>(
+    guids: &[Guid],
+    by_guid: &'a HashMap<Guid, &'a Missile>,
+    target_size: Option<i32>,
+) -> Vec<&'a Missile> {
+    let all: Vec<&Missile> = guids.iter().filter_map(|g| by_guid.get(g).copied()).collect();
+    match target_size {
+        Some(s) => {
+            let matched: Vec<&Missile> = all.iter().copied().filter(|m| m.size == s).collect();
+            if matched.is_empty() { all } else { matched }
+        }
+        None => all,
+    }
+}
+
+/// Extract a size hint from a loc-key suffix.
+///
+/// Patterns found in 4.7 LIVE:
+/// - `item_NameBEHR_LaserCannon_S7` → 7      (suffix at end)
+/// - `item_NameBEHR_LaserCannon_VNG_S2` → 2  (suffix after manufacturer subcode)
+/// - `item_NameAPAR_BallisticScatterGun_S1_Shark` → 1  (suffix mid-string)
+/// - `item_NameMISL_S02_CS_FSKI_Tempest` → 2 (zero-padded, mid-string)
+/// - `item_NameGMISL_S05_IR_TALN_Valkyrie` → 5
+///
+/// Returns the first `_S{digits}_` (or `_S{digits}` at end) match. None
+/// when no such pattern exists.
+fn parse_size_from_key(key: &str) -> Option<i32> {
+    let bytes = key.as_bytes();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if bytes[i] == b'_' && bytes[i + 1] == b'S' && bytes[i + 2].is_ascii_digit() {
+            let start = i + 2;
+            let mut end = start;
+            while end < bytes.len() && bytes[end].is_ascii_digit() {
+                end += 1;
+            }
+            // Boundary: must be followed by `_` or end of string.
+            // Otherwise we'd false-match `_Stanton4_` etc.
+            if end == bytes.len() || bytes[end] == b'_' {
+                if let Ok(n) = std::str::from_utf8(&bytes[start..end])
+                    .ok()
+                    .and_then(|s| s.parse::<i32>().ok())
+                    .ok_or(())
+                {
+                    return Some(n);
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+// ── Prefix builders ─────────────────────────────────────────────────────────
+
+fn ship_name_prefix(ships: &[&ShipWeapon], with_size: bool) -> String {
+    if !with_size {
+        return String::new();
+    }
+    let sizes: Vec<i32> = ships.iter().map(|w| w.size).filter(|s| *s > 0).collect();
+    match (sizes.iter().copied().min(), sizes.iter().copied().max()) {
+        (Some(lo), Some(hi)) if lo == hi => format!("S{lo} "),
+        (Some(lo), Some(hi)) => format!("S{lo}-S{hi} "),
+        _ => String::new(),
+    }
+}
+
+fn missile_name_prefix(
+    missiles: &[&Missile],
+    with_size: bool,
+    with_tracking: bool,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    if with_size {
+        let sizes: Vec<i32> = missiles.iter().map(|m| m.size).filter(|s| *s > 0).collect();
+        if let (Some(lo), Some(hi)) = (sizes.iter().copied().min(), sizes.iter().copied().max()) {
+            if lo == hi {
+                parts.push(format!("S{lo}"));
+            } else {
+                parts.push(format!("S{lo}-S{hi}"));
+            }
+        }
+    }
+
+    if with_tracking {
+        let tags: std::collections::BTreeSet<&'static str> = missiles
+            .iter()
+            .filter_map(|m| m.tracking.as_ref().and_then(tracking_tag))
+            .collect();
+        if tags.len() == 1 {
+            parts.push(format!("[{}]", tags.into_iter().next().unwrap()));
+        }
+        // Multiple distinct tags → omit (honest about the disagreement).
+        // No tag at all (unguided / signal we don't render) → omit.
+    }
+
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("{} ", parts.join(" "))
+    }
+}
+
+fn tracking_tag(t: &TrackingProfile) -> Option<&'static str> {
+    match t.signal {
+        ESignatureType::Infrared => Some("IR"),
+        ESignatureType::Electromagnetic => Some("EM"),
+        ESignatureType::CrossSection => Some("CS"),
+        _ => None,
+    }
+}
+
+// ── Suffix builders ─────────────────────────────────────────────────────────
+
+fn ship_stats_suffix(ships: &[&ShipWeapon]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    // Alpha damage. When all weapons in the matched set agree, render
+    // the per-type breakdown. When they diverge, drop the breakdown
+    // and show just the alpha range — combining breakdowns across
+    // mismatched weapons would be misleading.
+    let alphas: Vec<f32> = ships
+        .iter()
+        .filter_map(|w| w.damage.as_ref().map(DamageSummary::total))
+        .filter(|a| *a > 0.0)
+        .collect();
+    if let Some((lo, hi)) = min_max_f32(&alphas) {
+        if approx_eq(lo, hi, 0.5) {
+            // Same alpha → breakdown is meaningful.
+            let head = ships
+                .iter()
+                .find(|w| w.damage.is_some())
+                .and_then(|w| w.damage.as_ref())
+                .unwrap();
+            lines.push(format!("Alpha: {:.0} ({})", head.total(), damage_breakdown(head)));
+        } else {
+            lines.push(format!("Alpha: {}", format_f32_range(lo, hi)));
+        }
+    }
+
+    if let Some((lo, hi)) = min_max_filter(ships, |w| w.penetration_m, |v| v > 0.0) {
+        if approx_eq(lo, hi, 0.01) {
+            lines.push(format!("Penetration: {lo:.2}m"));
+        } else {
+            lines.push(format!("Penetration: {lo:.2}-{hi:.2}m"));
+        }
+    }
+
+    if let Some((lo, hi)) = min_max_filter(ships, |w| w.ammo_speed, |v| v > 0.0) {
+        if approx_eq(lo, hi, 0.5) {
+            lines.push(format!("Projectile Speed: {lo:.0} m/s"));
+        } else {
+            lines.push(format!(
+                "Projectile Speed: {} m/s",
+                format_f32_range(lo, hi)
+            ));
+        }
+    }
+
+    let ammos: Vec<i32> = ships
+        .iter()
+        .filter_map(|w| w.total_ammo)
+        .filter(|m| *m > 0)
+        .collect();
+    if let Some((lo, hi)) = min_max_i32(&ammos) {
+        lines.push(format!("Ammo: {}", format_i32_range(lo, hi)));
+    }
+
+    let caps: Vec<f32> = ships
+        .iter()
+        .filter_map(|w| match &w.sustain {
+            SustainKind::Energy(e) if e.max_ammo_load > 0.0 => Some(e.max_ammo_load),
+            _ => None,
+        })
+        .collect();
+    if let Some((lo, hi)) = min_max_f32(&caps) {
+        if approx_eq(lo, hi, 0.5) {
+            lines.push(format!("Capacitor: {lo:.0}"));
+        } else {
+            lines.push(format!("Capacitor: {}", format_f32_range(lo, hi)));
+        }
+    }
+
+    if lines.is_empty() {
+        return String::new();
+    }
+    let stats_str = lines
+        .iter()
+        .map(|l| format!("{NEWLINE}{l}"))
+        .collect::<String>();
+    format!("{PARAGRAPH_BREAK}{}{stats_str}", header("Weapon Stats"))
+}
+
+fn missile_stats_suffix(missiles: &[&Missile]) -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    let totals: Vec<f32> = missiles
+        .iter()
+        .filter_map(|m| m.damage.as_ref().map(DamageSummary::total))
+        .filter(|a| *a > 0.0)
+        .collect();
+    if let Some((lo, hi)) = min_max_f32(&totals) {
+        if approx_eq(lo, hi, 0.5) {
+            let head = missiles
+                .iter()
+                .find(|m| m.damage.is_some())
+                .and_then(|m| m.damage.as_ref())
+                .unwrap();
+            lines.push(format!("Damage: {:.0} ({})", head.total(), damage_breakdown(head)));
+        } else {
+            lines.push(format!("Damage: {}", format_f32_range(lo, hi)));
+        }
+    }
+
+    if let Some((lo, hi)) = min_max_filter(missiles, |m| m.speed, |v| v > 0.0) {
+        if approx_eq(lo, hi, 0.5) {
+            lines.push(format!("Speed: {lo:.0} m/s"));
+        } else {
+            lines.push(format!("Speed: {} m/s", format_f32_range(lo, hi)));
+        }
+    }
+
+    let arms: Vec<f32> = missiles.iter().map(|m| m.arm_time).filter(|t| *t > 0.0).collect();
+    if let Some((lo, hi)) = min_max_f32(&arms) {
+        if approx_eq(lo, hi, 0.01) {
+            lines.push(format!("Arm Time: {lo:.2}s"));
+        } else {
+            lines.push(format!("Arm Time: {lo:.2}-{hi:.2}s"));
+        }
+    }
+
+    // Tracking — only render when every matched missile has a tracking
+    // profile; otherwise the player would see partial / inconsistent
+    // numbers.
+    let trackings: Vec<&TrackingProfile> =
+        missiles.iter().filter_map(|m| m.tracking.as_ref()).collect();
+    if trackings.len() == missiles.len() && !trackings.is_empty() {
+        let lock_times: Vec<f32> = trackings.iter().map(|t| t.lock_time).filter(|v| *v > 0.0).collect();
+        if let Some((lo, hi)) = min_max_f32(&lock_times) {
+            if approx_eq(lo, hi, 0.05) {
+                lines.push(format!("Lock Time: {lo:.1}s"));
+            } else {
+                lines.push(format!("Lock Time: {lo:.1}-{hi:.1}s"));
+            }
+        }
+        let angles: Vec<f32> =
+            trackings.iter().map(|t| t.lock_angle_deg).filter(|v| *v > 0.0).collect();
+        if let Some((lo, hi)) = min_max_f32(&angles) {
+            if approx_eq(lo, hi, 0.5) {
+                lines.push(format!("Lock Angle: {lo:.0}°"));
+            } else {
+                lines.push(format!("Lock Angle: {}°", format_f32_range(lo, hi)));
+            }
+        }
+        let mins: Vec<f32> =
+            trackings.iter().map(|t| t.lock_range_min_m).collect();
+        let maxes: Vec<f32> =
+            trackings.iter().map(|t| t.lock_range_max_m).collect();
+        let any_range = mins.iter().any(|v| *v > 0.0) || maxes.iter().any(|v| *v > 0.0);
+        if any_range {
+            let min_lo = mins.iter().copied().fold(f32::INFINITY, f32::min);
+            let min_hi = mins.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            let max_lo = maxes.iter().copied().fold(f32::INFINITY, f32::min);
+            let max_hi = maxes.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            // Render `Lock Range: {min_lo[-min_hi]}m - {max_lo[-max_hi]}m`.
+            let min_str = if approx_eq(min_lo, min_hi, 0.5) {
+                format!("{min_lo:.0}")
+            } else {
+                format_f32_range(min_lo, min_hi)
+            };
+            let max_str = if approx_eq(max_lo, max_hi, 0.5) {
+                format!("{max_lo:.0}")
+            } else {
+                format_f32_range(max_lo, max_hi)
+            };
+            lines.push(format!("Lock Range: {min_str}m - {max_str}m"));
+        }
+    }
+
+    if lines.is_empty() {
+        return String::new();
+    }
+    let stats_str = lines
+        .iter()
+        .map(|l| format!("{NEWLINE}{l}"))
+        .collect::<String>();
+    let label = if missiles.iter().any(|m| matches!(m.item_sub_type, EItemSubType::Torpedo)) {
+        "Torpedo Stats"
+    } else {
+        "Missile Stats"
+    };
+    format!("{PARAGRAPH_BREAK}{}{stats_str}", header(label))
+}
+
+// ── Range helpers ───────────────────────────────────────────────────────────
+
+fn min_max_f32(values: &[f32]) -> Option<(f32, f32)> {
+    if values.is_empty() {
+        return None;
+    }
+    let lo = values.iter().copied().fold(f32::INFINITY, f32::min);
+    let hi = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    Some((lo, hi))
+}
+
+fn min_max_i32(values: &[i32]) -> Option<(i32, i32)> {
+    let lo = *values.iter().min()?;
+    let hi = *values.iter().max()?;
+    Some((lo, hi))
+}
+
+fn min_max_filter<T, F, P>(items: &[&T], extract: F, keep: P) -> Option<(f32, f32)>
+where
+    F: Fn(&T) -> Option<f32>,
+    P: Fn(f32) -> bool,
+{
+    let vs: Vec<f32> = items.iter().filter_map(|x| extract(x)).filter(|v| keep(*v)).collect();
+    min_max_f32(&vs)
+}
+
+fn approx_eq(a: f32, b: f32, tol: f32) -> bool {
+    (a - b).abs() <= tol
+}
+
+fn format_f32_range(lo: f32, hi: f32) -> String {
+    format!("{}-{}", lo.round() as i64, hi.round() as i64)
+}
+
+fn format_i32_range(lo: i32, hi: i32) -> String {
+    if lo == hi {
+        format!("{lo}")
+    } else {
+        format!("{lo}-{hi}")
+    }
+}
+
+// ── Damage breakdown helper ─────────────────────────────────────────────────
 
 fn damage_breakdown(d: &DamageSummary) -> String {
     let mut parts = Vec::new();
@@ -314,215 +597,66 @@ fn damage_breakdown(d: &DamageSummary) -> String {
     parts.join(", ")
 }
 
-// ── Localization-key + penetration helpers (raw svarog) ─────────────────────
-//
-// TODO(sc-holotable): these walk the raw DCB because sc-weapons doesn't
-// expose (a) the INI localization keys we need for patching and (b) the
-// ammo penetration distance. File feature requests when landing this.
-
-struct LocKeys {
-    name_key: String,
-    desc_key: String,
-}
-
-fn loc_keys_for(db: &DataCoreDatabase, guid: sc_extract::Guid) -> Option<LocKeys> {
-    let record = db.record(&guid)?;
-    let inst = record.as_instance();
-    let components = inst.get_array("Components")?;
-    for comp in components {
-        let Some(comp_inst) = to_instance(db, &comp) else {
-            continue;
-        };
-        if comp_inst.type_name() != Some("SAttachableComponentParams") {
-            continue;
-        }
-        let attach_def = comp_inst.get_instance("AttachDef")?;
-        let loc = attach_def.get_instance("Localization")?;
-        let name_key = loc
-            .get_str("Name")
-            .unwrap_or("")
-            .strip_prefix('@')
-            .unwrap_or("")
-            .to_string();
-        let desc_key = loc
-            .get_str("Description")
-            .unwrap_or("")
-            .strip_prefix('@')
-            .unwrap_or("")
-            .to_string();
-        if name_key.is_empty() {
-            return None;
-        }
-        return Some(LocKeys { name_key, desc_key });
-    }
-    None
-}
-
-fn legacy_penetration(db: &DataCoreDatabase, guid: sc_extract::Guid) -> Option<f32> {
-    let record = db.record(&guid)?;
-    let inst = record.as_instance();
-    let components = inst.get_array("Components")?;
-    for comp in components {
-        let Some(comp_inst) = to_instance(db, &comp) else {
-            continue;
-        };
-        if comp_inst.type_name() != Some("SAmmoContainerComponentParams") {
-            continue;
-        }
-        let Some(Value::Reference(Some(r))) = comp_inst.get("ammoParamsRecord") else {
-            continue;
-        };
-        let ammo_record = db.record(&r.guid)?;
-        let ammo_inst = ammo_record.as_instance();
-        return ammo_inst
-            .get_instance("projectileParams")
-            .and_then(|p| p.get_instance("penetrationParams"))
-            .and_then(|pen| pen.get_f32("basePenetrationDistance"));
-    }
-    None
-}
-
-// ── Missile extraction (raw svarog) ─────────────────────────────────────────
-
-fn extract_missiles(db: &DataCoreDatabase, ini: &HashMap<String, String>) -> Vec<MissileData> {
-    let mut missiles = Vec::new();
-
-    for record in db.records_by_type_containing("EntityClassDefinition") {
-        let components: Vec<Value> = match record.get_array("Components") {
-            Some(c) => c.collect(),
-            None => continue,
-        };
-
-        let mut item_type = "";
-        let mut item_sub_type = "";
-        let mut size = 0i32;
-        let mut name_key = String::new();
-        let mut desc_key = String::new();
-
-        for comp in &components {
-            let Some(inst) = to_instance(db, comp) else {
-                continue;
-            };
-            if inst.type_name() != Some("SAttachableComponentParams") {
-                continue;
-            }
-            let Some(attach_def) = inst.get_instance("AttachDef") else {
-                continue;
-            };
-            item_type = attach_def.get_str("Type").unwrap_or("");
-            item_sub_type = attach_def.get_str("SubType").unwrap_or("");
-            size = attach_def.get_i32("Size").unwrap_or(0);
-
-            if let Some(loc) = attach_def.get_instance("Localization") {
-                name_key = loc
-                    .get_str("Name")
-                    .unwrap_or("")
-                    .strip_prefix('@')
-                    .unwrap_or("")
-                    .to_string();
-                desc_key = loc
-                    .get_str("Description")
-                    .unwrap_or("")
-                    .strip_prefix('@')
-                    .unwrap_or("")
-                    .to_string();
-            }
-            break;
-        }
-
-        if item_type != "Missile"
-            || name_key.is_empty()
-            || !ini.contains_key(&name_key)
-        {
-            continue;
-        }
-
-        if let Some(m) = extract_missile(db, &components, name_key, desc_key, size, item_sub_type) {
-            missiles.push(m);
-        }
-    }
-
-    missiles
-}
-
-fn extract_missile(
-    db: &DataCoreDatabase,
-    components: &[Value],
-    name_key: String,
-    desc_key: String,
-    size: i32,
-    sub_type: &str,
-) -> Option<MissileData> {
-    let mut data = MissileData {
-        name_key,
-        desc_key,
-        size,
-        sub_type: sub_type.to_string(),
-        tracking_signal: String::new(),
-        damage_physical: 0.0,
-        damage_energy: 0.0,
-        damage_distortion: 0.0,
-        damage_thermal: 0.0,
-        damage_biochemical: 0.0,
-        damage_stun: 0.0,
-        speed: 0.0,
-        arm_time: 0.0,
-        lock_time: 0.0,
-        lock_angle: 0.0,
-        lock_range_min: 0.0,
-        lock_range_max: 0.0,
-    };
-
-    for comp in components {
-        let Some(inst) = to_instance(db, comp) else {
-            continue;
-        };
-        if inst.type_name() != Some("SCItemMissileParams") {
-            continue;
-        }
-
-        data.arm_time = inst.get_f32("armTime").unwrap_or(0.0);
-
-        if let Some(expl) = inst.get_instance("explosionParams")
-            && let Some(dmg) = expl.get_instance("damage")
-        {
-            data.damage_physical = dmg.get_f32("DamagePhysical").unwrap_or(0.0);
-            data.damage_energy = dmg.get_f32("DamageEnergy").unwrap_or(0.0);
-            data.damage_distortion = dmg.get_f32("DamageDistortion").unwrap_or(0.0);
-            data.damage_thermal = dmg.get_f32("DamageThermal").unwrap_or(0.0);
-            data.damage_biochemical = dmg.get_f32("DamageBiochemical").unwrap_or(0.0);
-            data.damage_stun = dmg.get_f32("DamageStun").unwrap_or(0.0);
-        }
-
-        if let Some(gcs) = inst.get_instance("GCSParams") {
-            data.speed = gcs.get_f32("linearSpeed").unwrap_or(0.0);
-        }
-
-        if let Some(tgt) = inst.get_instance("targetingParams") {
-            data.tracking_signal = tgt.get_str("trackingSignalType").unwrap_or("").to_string();
-            data.lock_time = tgt.get_f32("lockTime").unwrap_or(0.0);
-            data.lock_angle = tgt.get_f32("lockingAngle").unwrap_or(0.0);
-            data.lock_range_min = tgt.get_f32("lockRangeMin").unwrap_or(0.0);
-            data.lock_range_max = tgt.get_f32("lockRangeMax").unwrap_or(0.0);
-        }
-
-        break;
-    }
-
-    Some(data)
-}
-
-fn to_instance<'a>(db: &'a DataCoreDatabase, val: &Value<'a>) -> Option<Instance<'a>> {
-    match val {
-        Value::Class { struct_index, data } => {
-            Some(Instance::from_inline_data(db, *struct_index, data))
-        }
-        Value::StrongPointer(Some(r)) | Value::ClassRef(r) => {
-            Some(db.instance(r.struct_index, r.instance_index))
-        }
-        _ => None,
-    }
-}
+// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_size_handles_trailing_suffix() {
+        assert_eq!(parse_size_from_key("item_NameBEHR_LaserCannon_S7"), Some(7));
+        assert_eq!(parse_size_from_key("item_NameGATS_BallisticGatling_S1"), Some(1));
+        assert_eq!(parse_size_from_key("item_NameKLWE_LaserRepeater_S6"), Some(6));
+    }
+
+    #[test]
+    fn parse_size_handles_mid_string_suffix() {
+        // Manufacturer subcode after the size token.
+        assert_eq!(
+            parse_size_from_key("item_NameBEHR_LaserCannon_VNG_S2"),
+            Some(2)
+        );
+        // Variant suffix after the size token.
+        assert_eq!(
+            parse_size_from_key("item_NameAPAR_BallisticScatterGun_S1_Shark"),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn parse_size_handles_zero_padded_missile_format() {
+        assert_eq!(
+            parse_size_from_key("item_NameMISL_S02_CS_FSKI_Tempest"),
+            Some(2)
+        );
+        assert_eq!(
+            parse_size_from_key("item_NameGMISL_S05_IR_TALN_Valkyrie"),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn parse_size_rejects_non_size_tokens() {
+        // `_Stanton4_` should not be confused for `_S{n}_`.
+        assert_eq!(parse_size_from_key("item_NameFoo_Stanton4_Bar"), None);
+        // Bare key without any size token.
+        assert_eq!(parse_size_from_key("item_NameNoSizeHere"), None);
+        // `_S` followed by non-digit.
+        assert_eq!(parse_size_from_key("item_NameFoo_Special"), None);
+    }
+
+    #[test]
+    fn format_f32_range_collapses_when_equal() {
+        assert_eq!(format_f32_range(2076.0, 2076.0), "2076-2076");
+        // Caller is expected to test approx_eq first — format always
+        // emits the range form; the equality case is the caller's
+        // shortcut to a single-value format.
+    }
+
+    #[test]
+    fn approx_eq_within_tolerance() {
+        assert!(approx_eq(1.0, 1.4, 0.5));
+        assert!(!approx_eq(1.0, 2.0, 0.5));
+    }
+}

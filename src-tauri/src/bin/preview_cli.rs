@@ -210,7 +210,7 @@ fn pool_matches_filter(
     // Also match against the title text and debug names of members,
     // so a search for "Sweep and Clear" hits the actual displayed title.
     if let Some(head) = ids.first().and_then(|id| session.index.get(*id)) {
-        if let Some(t) = head.title.as_deref()
+        if let Some(t) = head.title(&session.locale)
             && t.to_lowercase().contains(&needle)
         {
             return true;

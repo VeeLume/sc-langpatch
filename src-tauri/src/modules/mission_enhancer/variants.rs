@@ -21,7 +21,7 @@
 use std::collections::HashMap;
 
 use sc_contracts::{LocalityRegistry, Mission, PrereqView};
-use sc_extract::Guid;
+use sc_extract::{Guid, LocaleMap};
 use svarog_datacore::DataCoreDatabase;
 
 use super::pool::region_label_for;
@@ -57,11 +57,12 @@ pub fn resolve<'a>(
     members: &[&'a Mission],
     localities: &LocalityRegistry,
     db: &DataCoreDatabase,
+    locale: &LocaleMap,
 ) -> (Vec<VariantLabel<'a>>, ResolutionStats) {
     // Pass 1: region label for every member.
     let regions: Vec<String> = members
         .iter()
-        .map(|m| region_label_for(m, localities))
+        .map(|m| region_label_for(m, localities, locale))
         .collect();
 
     // Pass 2: identify collisions among non-empty regions.
