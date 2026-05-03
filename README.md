@@ -2,6 +2,8 @@
 
 A language-pack *patcher* for Star Citizen.
 
+🇩🇪 [Deutsche Anleitung](README.de.md)
+
 [![Latest release](https://img.shields.io/github/v/release/VeeLume/sc-langpatch?display_name=tag)](https://github.com/VeeLume/sc-langpatch/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/VeeLume/sc-langpatch/total)](https://github.com/VeeLume/sc-langpatch/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
