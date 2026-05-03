@@ -7,8 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-05-04
+
 ### Fixed
-- `superlighttui` is now properly feature-gated behind `preview_tui` instead of being a hard dep — the Tauri release build no longer pulls it. Build the TUI with `cargo run --bin preview_tui --features preview_tui`.
+- Weapon names no longer accumulate stacked size prefixes when multiple in-game variants share one localization key. `BEHR_LaserCannon_S7` (twelve colliding variants) used to render as `S7 S9 S7 S7 S7 S7 S7 S7 S7 S12 S8 S9 M9A Cannon`; it now renders as `S7 M9A Cannon`. Same fix applies to weapon descriptions, which had been accumulating one `<EM4>Weapon Stats</EM4>` block per colliding variant.
+- Missile names with the same problem (`MISL_S02_CS_FSKI_Tempest` showing `S2 [CS] S2 [CS] Tempest II Missile`) collapse to one prefix as well.
+- A handful of Vanduul plasma cannons (`VNCL_PlasmaCannon_S2` / `_S3`) no longer get a paragraph break + stats block embedded inside the *name* field. Those entities have no dedicated `item_Desc…` entry, so their description fallback lands on the name key — the patcher now defensively skips name keys when applying description-style suffixes.
+- `superlighttui` is properly feature-gated behind `preview_tui` instead of being a hard dep — the Tauri release build no longer pulls it. Build the TUI with `cargo run --bin preview_tui --features preview_tui`.
+
+### Changed
+- Weapon enhancer now picks the variant whose size matches the loc-key suffix (`item_Name…_S7` → prefer the size-7 variants) before rendering. CIG re-uses entities for capital-ship hardpoints, point-defence turrets, and Idris/Javelin variants under one display name; the size-match filter restores the value the player actually sees in the in-game market listing.
+- When the size-matched variants still disagree on a stat, the patcher renders a range (`Alpha: 2076-6750`, `Penetration: 10.50-15.00m`, `S7-S12`) instead of silently picking one. Damage breakdowns are dropped when alpha diverges to avoid combining different damage profiles into one misleading line.
+- Missile tracking-tag prefix (`[IR]` / `[EM]` / `[CS]`) is omitted when colliding variants disagree on tracking signal, rather than rendering the wrong tag.
+- Bumped sc-extract / sc-contracts / sc-weapons / sc-installs to `sc-holotable/v0.3.0`.
+- Patcher now uses `AssetConfig::minimal()` for the parse-time asset bundle — sc-holotable's keys-only localization restructure means we no longer need the parse-time `LocaleMap` build, since cross-record name resolution (blueprint pool → entity name, ship-spawn lists, currency labels) happens at the call site against the post-overlay `LocaleMap` instead. Cuts a few hundred ms off cold-start parse time and ensures community language packs translate cross-record text consistently.
 
 ## [0.3.1] - 2026-05-02
 

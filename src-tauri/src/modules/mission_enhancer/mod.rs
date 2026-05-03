@@ -134,7 +134,7 @@ impl Module for MissionEnhancer {
                         ChoiceOption { value: "simple".into(), label: "Simple [CS Risk]".into() },
                         ChoiceOption {
                             value: "colored".into(),
-                            label: "Colored (yellow/red)".into(),
+                            label: "Emphasised (underline / highlight)".into(),
                         },
                     ],
                 },
