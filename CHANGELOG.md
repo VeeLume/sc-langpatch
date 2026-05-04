@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-04
+
 ### Added
 - App UI is now translated. English and Deutsch ship in the box — auto-detected from the OS locale, switchable via a new gear-icon popover top-right. Module names, descriptions, option labels, choice values, error messages, and warnings are all translated. A drift-detection test in `cargo test` blocks PRs that add a new module/option/error variant without a matching catalog entry.
 - Translation guide (`TRANSLATING.md`) for adding new locales — drop a new JSON file into `messages/`, register it in `project.inlang/settings.json`, open a PR. The language picker auto-includes new locales, rendered as autonyms (e.g. "Polski", "Français") via `Intl.DisplayNames`. No frontend code changes required.

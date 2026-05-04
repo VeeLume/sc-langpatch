@@ -1,6 +1,6 @@
 [package]
 name = "sc-langpatch"
-version = "0.3.2"
+version = "0.4.0"
 description = "Star Citizen Localization Patcher"
 authors = ["Valerie"]
 license = "MIT"
