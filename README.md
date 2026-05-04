@@ -12,6 +12,8 @@ Most Star Citizen language packs are a `global.ini` file you copy in by hand. **
 
 **Already using a community language pack?** Drop in a file path or URL and SC LangPatch will overlay its enrichments on top of it — your translation stays, the extra labels get added. See [Community language packs](#community-language-packs) below.
 
+The app UI itself is available in **English** and **Deutsch** — auto-detected from your OS locale, switchable via the gear icon in the top right. Want to add another language? See [TRANSLATING.md](TRANSLATING.md).
+
 ![SC LangPatch main window](docs/screenshots/app-main.png)
 
 > [!NOTE]

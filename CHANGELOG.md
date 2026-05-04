@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- App UI is now translated. English and Deutsch ship in the box — auto-detected from the OS locale, switchable via a new gear-icon popover top-right. Module names, descriptions, option labels, choice values, error messages, and warnings are all translated. A drift-detection test in `cargo test` blocks PRs that add a new module/option/error variant without a matching catalog entry.
+- Translation guide (`TRANSLATING.md`) for adding new locales — drop a new JSON file into `messages/`, register it in `project.inlang/settings.json`, open a PR. The language picker auto-includes new locales, rendered as autonyms (e.g. "Polski", "Français") via `Intl.DisplayNames`. No frontend code changes required.
+- First-run notice ("App now available in English and Deutsch — switch via the gear icon") so users who suddenly see translated text understand where it came from. Dismissible, persists across reloads.
+- German README (`README.de.md`) for non-tech German community members, with a step-by-step walkthrough for combining SC LangPatch with the [rjcncpt German language pack](https://github.com/rjcncpt/StarCitizen-Deutsch-INI). Linked from the English README.
+- Warning badges on modules in the GUI:
+  - `DCB` marks modules that need the DataCore database extracted from `Game2.dcb`.
+  - `REPLACE` marks modules that overwrite entire INI values rather than appending — useful for spotting which modules may overwrite text from a loaded community language pack.
+  - Hover tooltips per badge, plus a `?` legend next to the Modules heading explaining both.
+- Runtime guard against undeclared `Replace` ops. The `Module` trait gained `uses_replace_ops()` (default `false`). If a module emits a `Replace` op without declaring it, the op is dropped — protecting text the user's language pack supplied — and a warning surfaces in the patch results. `TomlModule` derives the declaration from its rules automatically; code modules declare explicitly.
+- Structured backend errors. `AppError` and `AppWarning` enums replace ad-hoc strings at the command boundary. The frontend dispatches on the variant code and renders via a localized message — predictable user-actionable cases (P4K not found, INI write failed, language-pack load failed, module skipped, …) get fully translated; uncaught errors fall through as English inside a localized "Unexpected error: {message}" frame for bug-report content.
+- `?` info toggle next to "Community language pack" — the helper paragraph is collapsed by default to match the visual rhythm of the other sections; click to expand.
+- "optional" badge next to the **Community language pack** heading so the optionality is visible at a glance.
+
+### Changed
+- **Community Language Pack** section reworked into a single combined input. Accepts a URL or a local path; folder-icon Browse opens the file picker; `×` clears. Saves on Enter or blur. Replaces the previous URL row + "or" + Pick file UI.
+- Settings gear popover now sits inside the Installations heading row (right-aligned), so it doesn't compete with the page heading or take up its own header band.
+- Illegal Goods option labels rewritten — the old "Color coded (red for drugs, yellow for contraband)" claim doesn't match how `<EM3>` / `<EM4>` actually render in the commodity name field. Now reads "Emphasised (distinct style for drugs vs contraband)" / "Plain [!] prefix". Output bytes unchanged. Internally refactored to use the centralised `Color` vocabulary from `formatter_helpers` instead of inline emphasis tags.
+
+### Fixed
+- Release builds no longer emit a dead-code warning for `options_hash` (debug-build-only helper, now properly `#[cfg(debug_assertions)]`-gated).
+
 ## [0.3.2] - 2026-05-04
 
 ### Fixed
