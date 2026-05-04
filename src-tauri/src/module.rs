@@ -164,6 +164,16 @@ pub trait Module: Send + Sync {
         false
     }
 
+    /// Whether this module emits `PatchOp::Replace` ops. Replace overwrites
+    /// the entire INI value, so any text the user's community language pack
+    /// supplied for that key is discarded. Prefix/Suffix layer on top and
+    /// preserve the underlying value. The UI surfaces this as a warning
+    /// badge so users running a translation pack can spot which modules
+    /// might overwrite their translations.
+    fn uses_replace_ops(&self) -> bool {
+        false
+    }
+
     /// Priority: lower runs first. Key fix modules should use 0,
     /// normal modules default to 100.
     fn priority(&self) -> u32 {
@@ -191,6 +201,9 @@ pub struct ModuleInfo {
     pub default_enabled: bool,
     pub enabled: bool,
     pub needs_datacore: bool,
+    /// Whether this module emits `PatchOp::Replace` ops. See
+    /// [`Module::uses_replace_ops`].
+    pub uses_replace_ops: bool,
     pub options: Vec<ModuleOption>,
     /// Persisted option values from disk. Empty if the user has not
     /// customized this module — the UI should fall back to option defaults.

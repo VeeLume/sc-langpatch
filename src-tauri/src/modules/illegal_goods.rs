@@ -3,13 +3,14 @@ use std::collections::HashMap;
 use anyhow::Result;
 use svarog_datacore::{DataCoreDatabase, Instance, Value};
 
+use crate::formatter_helpers::{Color, apply_color};
 use crate::module::{ChoiceOption, Module, ModuleContext, ModuleOption, OptionKind, PatchOp};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum IllegalCategory {
-    /// Controlled substance (drug) — EM3 (red)
+    /// Controlled substance (drug) — wrapped in `Color::Underline`.
     Drug,
-    /// Prohibited good (contraband) — EM4 (yellow)
+    /// Prohibited good (contraband) — wrapped in `Color::Highlight`.
     Contraband,
 }
 
@@ -53,11 +54,11 @@ impl Module for IllegalGoods {
                 choices: vec![
                     ChoiceOption {
                         value: "color_coded".into(),
-                        label: "Color coded (red for drugs, yellow for contraband)".into(),
+                        label: "Emphasised (distinct style for drugs vs contraband)".into(),
                     },
                     ChoiceOption {
                         value: "simple".into(),
-                        label: "Simple [!] prefix (no color)".into(),
+                        label: "Plain [!] prefix".into(),
                     },
                 ],
             },
@@ -127,10 +128,7 @@ impl Module for IllegalGoods {
             // Name prefix
             let prefix = match display {
                 "simple" => "[!] ".to_string(),
-                _ => match good.category {
-                    IllegalCategory::Drug => "<EM3>[!]</EM3> ".to_string(),
-                    IllegalCategory::Contraband => "<EM4>[!]</EM4> ".to_string(),
-                },
+                _ => format!("{} ", apply_color(category_color(good.category), "[!]")),
             };
             patches.push((good.name_key.clone(), PatchOp::Prefix(prefix)));
 
@@ -148,7 +146,8 @@ impl Module for IllegalGoods {
                         good.jurisdictions.join(", ")
                     };
                     let suffix = format!(
-                        "\\n\\n<EM3>{category_label}</EM3>\\nIllegal in: {jurisdictions_text}"
+                        "\\n\\n{}\\nIllegal in: {jurisdictions_text}",
+                        apply_color(category_color(good.category), category_label)
                     );
                     patches.push((desc_key, PatchOp::Suffix(suffix)));
                 }
@@ -156,6 +155,13 @@ impl Module for IllegalGoods {
         }
 
         Ok(patches)
+    }
+}
+
+fn category_color(category: IllegalCategory) -> Color {
+    match category {
+        IllegalCategory::Drug => Color::Underline,
+        IllegalCategory::Contraband => Color::Highlight,
     }
 }
 
@@ -215,16 +221,21 @@ fn collect_resource_refs<'a>(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
-    fn prefix_formats() {
-        assert_eq!(format!("[!] {}", "WiDoW"), "[!] WiDoW");
-        assert_eq!(
-            format!("<EM3>[!]</EM3> {}", "WiDoW"),
-            "<EM3>[!]</EM3> WiDoW"
+    fn drug_uses_underline_emphasis() {
+        let prefix = format!("{} {}", apply_color(category_color(IllegalCategory::Drug), "[!]"), "WiDoW");
+        assert_eq!(prefix, "<EM3>[!]</EM3> WiDoW");
+    }
+
+    #[test]
+    fn contraband_uses_highlight_emphasis() {
+        let prefix = format!(
+            "{} {}",
+            apply_color(category_color(IllegalCategory::Contraband), "[!]"),
+            "Osoian Hides"
         );
-        assert_eq!(
-            format!("<EM4>[!]</EM4> {}", "Osoian Hides"),
-            "<EM4>[!]</EM4> Osoian Hides"
-        );
+        assert_eq!(prefix, "<EM4>[!]</EM4> Osoian Hides");
     }
 }

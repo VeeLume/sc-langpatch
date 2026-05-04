@@ -1,19 +1,25 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import type { Installation } from "$lib/bindings";
+  import { m } from "$lib/i18n";
 
   interface Props {
     installations: Installation[];
     selected: Set<string>;
     onToggle: (channel: string) => void;
+    headingAction?: Snippet;
   }
 
-  let { installations, selected, onToggle }: Props = $props();
+  let { installations, selected, onToggle, headingAction }: Props = $props();
 </script>
 
 <section>
-  <h2>Installations</h2>
+  <div class="heading-row">
+    <h2>{m.installations_heading()}</h2>
+    {#if headingAction}{@render headingAction()}{/if}
+  </div>
   {#if installations.length === 0}
-    <p class="muted">No Star Citizen installations found.</p>
+    <p class="muted">{m.installations_none_found()}</p>
   {:else}
     <div class="list">
       {#each installations as inst}
@@ -32,6 +38,18 @@
 </section>
 
 <style>
+  .heading-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 0 0 8px;
+  }
+
+  .heading-row :global(h2) {
+    margin: 0;
+  }
+
   .list {
     display: flex;
     flex-direction: column;

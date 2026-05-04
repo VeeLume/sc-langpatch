@@ -193,6 +193,10 @@ impl Module for TomlModule {
         self.meta.priority
     }
 
+    fn uses_replace_ops(&self) -> bool {
+        self.rules.iter().any(|r| matches!(r.op_kind, OpKind::Replace))
+    }
+
     fn generate_renames(&self, _ctx: &ModuleContext) -> Result<Vec<KeyRename>> {
         Ok(self.renames.clone())
     }

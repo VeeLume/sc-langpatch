@@ -5,7 +5,7 @@
 
 
 export const commands = {
-async getInstallations() : Promise<Result<Installation[], string>> {
+async getInstallations() : Promise<Result<Installation[], AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("get_installations") };
 } catch (e) {
@@ -31,7 +31,7 @@ async getSelectedChannels() : Promise<string[]> {
 async setSelectedChannels(channels: string[]) : Promise<void> {
     await TAURI_INVOKE("set_selected_channels", { channels });
 },
-async patch(installations: Installation[]) : Promise<Result<PatchResult[], string>> {
+async patch(installations: Installation[]) : Promise<Result<PatchResult[], AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("patch", { installations }) };
 } catch (e) {
@@ -39,7 +39,7 @@ async patch(installations: Installation[]) : Promise<Result<PatchResult[], strin
     else return { status: "error", error: e  as any };
 }
 },
-async removePatch(installations: Installation[]) : Promise<Result<RemoveResult[], string>> {
+async removePatch(installations: Installation[]) : Promise<Result<RemoveResult[], AppError>> {
     try {
     return { status: "ok", data: await TAURI_INVOKE("remove_patch", { installations }) };
 } catch (e) {
@@ -59,6 +59,90 @@ async removePatch(installations: Installation[]) : Promise<Result<RemoveResult[]
 
 /** user-defined types **/
 
+/**
+ * Errors that can stop a command from producing a result, or that
+ * land in `PatchResult.error` / `RemoveResult.error` when a single
+ * installation can't be processed.
+ */
+export type AppError = 
+/**
+ * Discovery (RSI launcher log parsing) failed at the OS level.
+ */
+{ code: "discovery_failed"; data: { message: string } } | 
+/**
+ * `tauri::async_runtime::spawn_blocking` join failed.
+ */
+{ code: "task_join_failed"; data: { message: string } } | 
+/**
+ * Could not open `Data.p4k`. Path missing, locked, or corrupted.
+ */
+{ code: "p4k_open_failed"; data: { path: string; message: string } } | 
+/**
+ * `Data/Localization/english/global.ini` is missing inside the
+ * p4k. Game install is incomplete or shape changed.
+ */
+{ code: "global_ini_not_found" } | 
+/**
+ * UTF-16 decode of the base global.ini failed.
+ */
+{ code: "ini_decode_failed"; data: { message: string } } | 
+/**
+ * Writing the patched global.ini back to the install dir failed.
+ */
+{ code: "output_write_failed"; data: { message: string } } | 
+/**
+ * Removing a previously written patch (and clearing user.cfg)
+ * failed.
+ */
+{ code: "output_remove_failed"; data: { message: string } } | 
+/**
+ * Any error that wasn't classified — surfaced raw inside a
+ * localized "Unexpected error: {message}" frame.
+ */
+{ code: "unexpected"; data: { message: string } }
+/**
+ * Non-fatal issues collected during a patch run. Surfaced in
+ * `PatchResult.warnings`. Module-level variants carry both the id
+ * (used to look up the translated module name in the frontend
+ * catalog) and the english name (fallback when no translation
+ * exists for that module).
+ */
+export type AppWarning = 
+/**
+ * Could not load the community language pack from URL or path.
+ */
+{ code: "language_pack_load_failed"; data: { message: string } } | 
+/**
+ * Loaded the bytes but couldn't decode them as INI.
+ */
+{ code: "language_pack_decode_failed"; data: { message: string } } | 
+/**
+ * Module needs the DataCore but it wasn't extracted (e.g. the
+ * p4k extraction step failed earlier in this run).
+ */
+{ code: "module_skipped_no_datacore"; data: { module_id: string; module_name: string } } | 
+/**
+ * Module needs the parsed locale map but it wasn't built.
+ */
+{ code: "module_skipped_no_locale"; data: { module_id: string; module_name: string } } | 
+/**
+ * `generate_renames` returned an error.
+ */
+{ code: "module_rename_failed"; data: { module_id: string; module_name: string; message: string } } | 
+/**
+ * `generate_patches` returned an error.
+ */
+{ code: "module_patch_failed"; data: { module_id: string; module_name: string; message: string } } | 
+/**
+ * Module emitted Replace ops without declaring `uses_replace_ops()`
+ * — those ops were dropped to protect the user's language pack
+ * values.
+ */
+{ code: "undeclared_replace_dropped"; data: { module_id: string; module_name: string; count: number } } | 
+/**
+ * Any non-fatal issue that wasn't classified.
+ */
+{ code: "unexpected"; data: { message: string } }
 export type ChoiceOption = { 
 /**
  * Machine-readable value (used in config and code).
@@ -83,7 +167,12 @@ options?: OptionEntry[] }
 /**
  * Serializable module metadata for the GUI.
  */
-export type ModuleInfo = { id: string; name: string; description: string; default_enabled: boolean; enabled: boolean; needs_datacore: boolean; options: ModuleOption[]; 
+export type ModuleInfo = { id: string; name: string; description: string; default_enabled: boolean; enabled: boolean; needs_datacore: boolean; 
+/**
+ * Whether this module emits `PatchOp::Replace` ops. See
+ * [`Module::uses_replace_ops`].
+ */
+uses_replace_ops: boolean; options: ModuleOption[]; 
 /**
  * Persisted option values from disk. Empty if the user has not
  * customized this module — the UI should fall back to option defaults.
@@ -135,8 +224,8 @@ module_stats: ModuleStat[];
  * True issues only — module errors, skips for missing datacore /
  * locale, etc. Not per-module stats (those are `module_stats`).
  */
-warnings: string[]; error: string | null }
-export type RemoveResult = { channel: string; removed: boolean; error: string | null }
+warnings: AppWarning[]; error: AppError | null }
+export type RemoveResult = { channel: string; removed: boolean; error: AppError | null }
 /**
  * Aggregated count of Replace conflicts against a single earlier module.
  */

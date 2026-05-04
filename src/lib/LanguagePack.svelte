@@ -1,5 +1,6 @@
 <script lang="ts">
   import { commands } from "$lib/bindings";
+  import { m } from "$lib/i18n";
   import { open } from "@tauri-apps/plugin-dialog";
 
   interface Props {
@@ -9,202 +10,258 @@
 
   let { path, onChange }: Props = $props();
 
-  let urlInput = $state("");
+  let hintOpen = $state(false);
+
+  // Local edit buffer — committed on Enter or blur. Lets the user
+  // type a URL/path without saving on every keystroke. Re-syncs from
+  // `path` whenever it changes externally (pickFile, clear, init).
+  let draft = $state("");
+
+  $effect(() => {
+    draft = path ?? "";
+  });
+
+  async function commit() {
+    const trimmed = draft.trim();
+    const next = trimmed === "" ? null : trimmed;
+    if (next === path) return;
+    await commands.setLanguagePack(next);
+    onChange(next);
+  }
 
   async function pickFile() {
     const selected = await open({
-      title: "Select community language pack (global.ini)",
+      title: m.language_pack_dialog_title(),
       multiple: false,
       directory: false,
       filters: [
-        { name: "INI files", extensions: ["ini"] },
-        { name: "All files", extensions: ["*"] },
+        { name: m.language_pack_filter_ini(), extensions: ["ini"] },
+        { name: m.language_pack_filter_all(), extensions: ["*"] },
       ],
     });
-
     if (typeof selected === "string") {
-      await save(selected);
+      draft = selected;
+      await commit();
     }
   }
 
-  async function useUrl() {
-    const trimmed = urlInput.trim();
-    if (!trimmed) return;
-    await save(trimmed);
-    urlInput = "";
-  }
-
-  async function save(source: string) {
-    await commands.setLanguagePack(source);
-    onChange(source);
-  }
-
   async function clear() {
-    await commands.setLanguagePack(null);
-    onChange(null);
-  }
-
-  function isUrl(s: string): boolean {
-    return s.startsWith("http://") || s.startsWith("https://");
-  }
-
-  function filename(p: string): string {
-    const parts = p.split(/[/\\]/);
-    return parts[parts.length - 1] || p;
+    draft = "";
+    await commit();
   }
 </script>
 
 <section>
-  <h2>Community language pack</h2>
-  <p class="hint">
-    Optional. Overlay a translated <code>global.ini</code> (e.g. German)
-    before our enhancements are applied. Accepts a local file or a URL
-    pointing directly at an <code>.ini</code> file — GitHub
-    <code>blob/</code> links work (the repo root page does not).
-  </p>
+  <div class="heading-row">
+    <h2>
+      {m.language_pack_heading()}
+      <span class="optional">{m.language_pack_optional()}</span>
+    </h2>
+    <button
+      type="button"
+      class="info-btn"
+      onclick={() => (hintOpen = !hintOpen)}
+      aria-expanded={hintOpen}
+      aria-label={hintOpen
+        ? m.language_pack_hide_hint()
+        : m.language_pack_show_hint()}
+      title={hintOpen
+        ? m.language_pack_hide_hint()
+        : m.language_pack_show_hint()}
+    >
+      ?
+    </button>
+  </div>
 
-  {#if path}
-    <div class="current">
-      <span class="filename" title={path}>
-        {isUrl(path) ? "URL" : filename(path)}
-      </span>
-      <span class="full-path" title={path}>{path}</span>
-      <div class="actions">
-        <button class="secondary" onclick={pickFile}>Pick file…</button>
-        <button class="clear" onclick={clear}>Clear</button>
-      </div>
-    </div>
+  {#if hintOpen}
+    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+    <p class="hint">{@html m.language_pack_hint_html()}</p>
   {/if}
 
-  <div class="pickers" class:has-current={!!path}>
-    <div class="url-row">
-      <input
-        type="url"
-        placeholder="https://github.com/... or https://example.com/de.ini"
-        bind:value={urlInput}
-        onkeydown={(e) => e.key === "Enter" && useUrl()}
-      />
-      <button class="use-url" onclick={useUrl} disabled={!urlInput.trim()}>
-        Use URL
+  <div class="input-row">
+    <input
+      type="text"
+      placeholder={m.language_pack_url_placeholder()}
+      bind:value={draft}
+      onkeydown={(e) => e.key === "Enter" && commit()}
+      onblur={commit}
+    />
+    {#if draft}
+      <button
+        type="button"
+        class="icon-btn clear-btn"
+        onclick={clear}
+        aria-label={m.language_pack_clear()}
+        title={m.language_pack_clear()}
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <line x1="18" y1="6" x2="6" y2="18" />
+          <line x1="6" y1="6" x2="18" y2="18" />
+        </svg>
       </button>
-    </div>
-    {#if !path}
-      <div class="or">or</div>
-      <button class="pick" onclick={pickFile}>Pick local file…</button>
     {/if}
+    <button
+      type="button"
+      class="icon-btn browse-btn"
+      onclick={pickFile}
+      aria-label={m.language_pack_pick_file()}
+      title={m.language_pack_pick_file()}
+    >
+      <svg
+        width="16"
+        height="16"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <path
+          d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+        />
+      </svg>
+    </button>
   </div>
 </section>
 
 <style>
+  .heading-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 24px 0 8px;
+  }
+
+  .heading-row :global(h2) {
+    margin: 0;
+  }
+
+  .heading-row :global(h2:first-child) {
+    margin-top: 0;
+  }
+
+  .optional {
+    margin-left: 4px;
+    color: #555;
+    font-weight: 400;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 1em;
+    font-style: italic;
+  }
+
+  .info-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 1px solid #444;
+    border-radius: 50%;
+    background: transparent;
+    color: #888;
+    font-size: 0.7rem;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+
+  .info-btn:hover,
+  .info-btn[aria-expanded="true"] {
+    color: #4cc9f0;
+    border-color: #4cc9f0;
+  }
+
   .hint {
     margin: 0 0 8px;
     color: #888;
     font-size: 0.85rem;
   }
 
-  code {
+  :global(.hint code) {
     background: #ffffff10;
     padding: 1px 4px;
     border-radius: 3px;
     font-size: 0.85em;
   }
 
-  .current {
-    padding: 10px 12px;
+  .input-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
     background: #16213e;
+    border: 1px solid transparent;
     border-radius: 6px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-    margin-bottom: 8px;
+    padding: 4px 6px 4px 12px;
+    transition: border-color 0.15s, background 0.15s;
   }
 
-  .filename {
-    font-weight: 600;
-    color: #4cc9f0;
+  .input-row:hover {
+    background: #1a2745;
   }
 
-  .full-path {
-    font-size: 0.75rem;
-    color: #888;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+  .input-row:focus-within {
+    border-color: #4cc9f0;
+    background: #16213e;
   }
 
-  .actions {
-    display: flex;
-    gap: 6px;
-    margin-top: 6px;
-  }
-
-  .pickers {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .pickers.has-current {
-    opacity: 0.85;
-  }
-
-  .url-row {
-    display: flex;
-    gap: 6px;
-  }
-
-  input[type="url"] {
+  input[type="text"] {
     flex: 1;
-    padding: 8px 10px;
-    border: 1px solid #333;
-    border-radius: 4px;
-    background: #0f1a30;
-    color: #e0e0e0;
-    font-size: 0.85rem;
-  }
-
-  input[type="url"]:focus {
-    outline: none;
-    border-color: #4cc9f0;
-  }
-
-  button {
-    font-size: 0.85rem;
-    padding: 6px 10px;
-    border-radius: 4px;
-    cursor: pointer;
-    border: 1px solid #555;
+    min-width: 0;
+    padding: 4px 0;
+    border: none;
     background: transparent;
-    color: #ccc;
-    transition: border-color 0.15s, color 0.15s;
-  }
-
-  button:hover:not(:disabled) {
-    border-color: #4cc9f0;
-    color: #4cc9f0;
-  }
-
-  button:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
-
-  .or {
-    text-align: center;
-    color: #666;
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.1em;
-    margin: 2px 0;
-  }
-
-  .pick {
-    padding: 10px;
+    color: #e0e0e0;
     font-size: 0.9rem;
+    font-family: inherit;
   }
 
-  .clear:hover {
-    border-color: #ef233c;
+  input[type="text"]:focus {
+    outline: none;
+  }
+
+  .icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: none;
+    border-radius: 4px;
+    background: transparent;
+    color: #888;
+    cursor: pointer;
+    transition: color 0.15s, background 0.15s;
+  }
+
+  .input-row:hover .icon-btn {
+    color: #aaa;
+  }
+
+  .icon-btn:hover {
+    background: #ffffff10;
+    color: #e0e0e0;
+  }
+
+  .clear-btn:hover {
     color: #ef233c;
+  }
+
+  .browse-btn:hover {
+    color: #4cc9f0;
   }
 </style>

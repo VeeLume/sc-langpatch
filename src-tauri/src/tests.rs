@@ -864,3 +864,125 @@ mod language_pack_url {
         assert_eq!(normalize_language_pack_url(input), input);
     }
 }
+
+#[cfg(test)]
+mod i18n_catalog {
+    //! Verify the frontend Paraglide message catalogs (`messages/{locale}.json`)
+    //! stay in sync with the module registry. Every registered module's `id`
+    //! and every option / choice it exposes must have a matching key, so
+    //! adding a module without translating it fails CI rather than silently
+    //! showing the English fallback to German users.
+    //!
+    //! Conventions enforced:
+    //! - `module_<id>_name`, `module_<id>_description`
+    //! - `option_<modId>_<optId>_label`, `option_<modId>_<optId>_description`
+    //! - `choice_<modId>_<optId>_<value>_label` (for `OptionKind::Choice`)
+    //!
+    //! The base catalog (`en.json`) is the source of truth: any expected key
+    //! missing there is an error. Other locales must contain exactly the
+    //! same keys as the base — no extras, no gaps — so a forgotten translation
+    //! is caught the same way as a forgotten message.
+
+    use std::collections::BTreeSet;
+    use std::path::PathBuf;
+
+    use crate::error::{ALL_ERROR_CODES, ALL_WARNING_CODES};
+    use crate::module::OptionKind;
+    use crate::modules::builtin_modules;
+
+    const BASE_LOCALE: &str = "en";
+    /// Locales that must mirror the base catalog key-for-key.
+    const TRANSLATED_LOCALES: &[&str] = &["de"];
+    /// JSON keys that aren't translation messages and should be ignored.
+    const META_KEYS: &[&str] = &["$schema"];
+    /// Module ids that are dev-only / not surfaced to end users in release
+    /// builds. Translations are not required for these.
+    const NON_USER_FACING_MODULE_IDS: &[&str] = &["test_em_colors"];
+
+    fn catalog_path(locale: &str) -> PathBuf {
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        manifest
+            .parent()
+            .expect("workspace root")
+            .join("messages")
+            .join(format!("{locale}.json"))
+    }
+
+    fn load_keys(locale: &str) -> BTreeSet<String> {
+        let path = catalog_path(locale);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let value: serde_json::Value = serde_json::from_str(&text)
+            .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        let obj = value
+            .as_object()
+            .unwrap_or_else(|| panic!("{} is not a JSON object", path.display()));
+        obj.keys()
+            .filter(|k| !META_KEYS.contains(&k.as_str()))
+            .cloned()
+            .collect()
+    }
+
+    fn expected_keys() -> BTreeSet<String> {
+        let mut keys = BTreeSet::new();
+        for module in builtin_modules() {
+            let mid = module.id();
+            if NON_USER_FACING_MODULE_IDS.contains(&mid) {
+                continue;
+            }
+            keys.insert(format!("module_{mid}_name"));
+            keys.insert(format!("module_{mid}_description"));
+            for opt in module.options() {
+                let oid = &opt.id;
+                keys.insert(format!("option_{mid}_{oid}_label"));
+                keys.insert(format!("option_{mid}_{oid}_description"));
+                if let OptionKind::Choice { choices } = &opt.kind {
+                    for choice in choices {
+                        let cv = &choice.value;
+                        keys.insert(format!("choice_{mid}_{oid}_{cv}_label"));
+                    }
+                }
+            }
+        }
+        for code in ALL_ERROR_CODES {
+            keys.insert(format!("error_{code}"));
+        }
+        for code in ALL_WARNING_CODES {
+            // `undeclared_replace_dropped` uses ICU-style plural variants
+            // (`_one` / `_other`) rather than a single key. Other warning
+            // variants take a `_${code}` key as-is.
+            if *code == "undeclared_replace_dropped" {
+                keys.insert(format!("warning_{code}_one"));
+                keys.insert(format!("warning_{code}_other"));
+            } else {
+                keys.insert(format!("warning_{code}"));
+            }
+        }
+        keys
+    }
+
+    #[test]
+    fn base_catalog_covers_all_modules() {
+        let actual = load_keys(BASE_LOCALE);
+        let expected = expected_keys();
+        let missing: Vec<&String> = expected.difference(&actual).collect();
+        assert!(
+            missing.is_empty(),
+            "base catalog (messages/{BASE_LOCALE}.json) is missing module/option keys: {missing:#?}"
+        );
+    }
+
+    #[test]
+    fn translations_match_base_catalog() {
+        let base = load_keys(BASE_LOCALE);
+        for &locale in TRANSLATED_LOCALES {
+            let other = load_keys(locale);
+            let missing: Vec<&String> = base.difference(&other).collect();
+            let extra: Vec<&String> = other.difference(&base).collect();
+            assert!(
+                missing.is_empty() && extra.is_empty(),
+                "messages/{locale}.json drifted from messages/{BASE_LOCALE}.json\n  missing: {missing:#?}\n  extra: {extra:#?}"
+            );
+        }
+    }
+}

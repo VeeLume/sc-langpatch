@@ -1,4 +1,5 @@
 pub mod discovery;
+pub mod error;
 pub mod merge;
 pub mod module;
 pub mod modules;
@@ -16,6 +17,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use anyhow::{Context, Result};
+use error::{AppError, AppWarning};
 use module::{ModuleConfig, ModuleContext, ModuleInfo, PatchOp};
 use sc_extract::{AssetConfig, AssetData, AssetSource, Datacore, DatacoreConfig, LocaleMap};
 use serde::{Deserialize, Serialize};
@@ -111,8 +113,10 @@ fn save_persisted(state: &AppState) {
 
 #[tauri::command]
 #[specta::specta]
-fn get_installations() -> Result<Vec<discovery::Installation>, String> {
-    discovery::find_installations().map_err(|e| format!("{e:#}"))
+fn get_installations() -> Result<Vec<discovery::Installation>, AppError> {
+    discovery::find_installations().map_err(|e| AppError::DiscoveryFailed {
+        message: format!("{e:#}"),
+    })
 }
 
 #[tauri::command]
@@ -136,6 +140,7 @@ fn get_modules(state: tauri::State<'_, Mutex<AppState>>) -> Vec<ModuleInfo> {
                 default_enabled: m.default_enabled(),
                 enabled,
                 needs_datacore: m.needs_datacore(),
+                uses_replace_ops: m.uses_replace_ops(),
                 options: m.options(),
                 option_values: config.map(|c| c.options.clone()).unwrap_or_default(),
             }
@@ -193,8 +198,8 @@ pub struct PatchResult {
     pub module_stats: Vec<ModuleStat>,
     /// True issues only — module errors, skips for missing datacore /
     /// locale, etc. Not per-module stats (those are `module_stats`).
-    pub warnings: Vec<String>,
-    pub error: Option<String>,
+    pub warnings: Vec<AppWarning>,
+    pub error: Option<AppError>,
 }
 
 /// Per-module outcome for a single patch run.
@@ -223,7 +228,7 @@ pub struct ReplaceOverride {
 pub struct RemoveResult {
     pub channel: String,
     pub removed: bool,
-    pub error: Option<String>,
+    pub error: Option<AppError>,
 }
 
 #[tauri::command]
@@ -231,7 +236,7 @@ pub struct RemoveResult {
 async fn patch(
     state: tauri::State<'_, Mutex<AppState>>,
     installations: Vec<discovery::Installation>,
-) -> Result<Vec<PatchResult>, String> {
+) -> Result<Vec<PatchResult>, AppError> {
     // Clone what we need so we can drop the lock before the heavy work
     let (configs, language_pack_path) = {
         let s = state.lock().unwrap();
@@ -250,21 +255,23 @@ async fn patch(
                         total: 0,
                         module_stats: Vec::new(),
                         warnings: Vec::new(),
-                        error: Some(format!("{e:#}")),
+                        error: Some(e),
                     },
                 }
             })
             .collect()
     })
     .await
-    .map_err(|e| format!("{e:#}"))
+    .map_err(|e| AppError::TaskJoinFailed {
+        message: format!("{e:#}"),
+    })
 }
 
 #[tauri::command]
 #[specta::specta]
 async fn remove_patch(
     installations: Vec<discovery::Installation>,
-) -> Result<Vec<RemoveResult>, String> {
+) -> Result<Vec<RemoveResult>, AppError> {
     tauri::async_runtime::spawn_blocking(move || {
         installations
             .iter()
@@ -280,14 +287,18 @@ async fn remove_patch(
                     Err(e) => RemoveResult {
                         channel: inst.channel.clone(),
                         removed: false,
-                        error: Some(format!("{e:#}")),
+                        error: Some(AppError::OutputRemoveFailed {
+                            message: format!("{e:#}"),
+                        }),
                     },
                 }
             })
             .collect()
     })
     .await
-    .map_err(|e| format!("{e:#}"))
+    .map_err(|e| AppError::TaskJoinFailed {
+        message: format!("{e:#}"),
+    })
 }
 
 // ── Core patching logic ─────────────────────────────────────────────────────
@@ -296,19 +307,21 @@ fn patch_installation(
     inst: &discovery::Installation,
     configs: &HashMap<String, ModuleConfig>,
     language_pack_path: Option<&str>,
-) -> Result<PatchResult> {
+) -> Result<PatchResult, AppError> {
     let install_path = Path::new(&inst.path);
     let p4k_path = install_path.join("Data.p4k");
 
     // Open archive via sc-extract — single source of truth for both the raw
     // global.ini bytes (existing patcher pipeline) and the typed
     // Datacore / LocaleMap consumed by sc-holotable-backed modules.
-    let assets = AssetSource::open(&p4k_path)
-        .with_context(|| format!("Failed to open {}", p4k_path.display()))?;
+    let assets = AssetSource::open(&p4k_path).map_err(|e| AppError::P4kOpenFailed {
+        path: p4k_path.display().to_string(),
+        message: format!("{e:#}"),
+    })?;
 
     let ini_bytes = assets
         .read("Data/Localization/english/global.ini")
-        .with_context(|| "global.ini not found in Data.p4k")?;
+        .map_err(|_| AppError::GlobalIniNotFound)?;
 
     // Decide once which holotable artefacts the current module set wants.
     let needs = ModuleNeeds::collect(configs);
@@ -343,9 +356,11 @@ fn patch_installation(
     drop(assets);
 
     // Decode INI
-    let mut ini_content = merge::decode_ini(&ini_bytes)?;
+    let mut ini_content = merge::decode_ini(&ini_bytes).map_err(|e| AppError::IniDecodeFailed {
+        message: format!("{e:#}"),
+    })?;
 
-    let mut warnings = Vec::new();
+    let mut warnings: Vec<AppWarning> = Vec::new();
 
     // Overlay community language pack if configured
     if let Some(source) = language_pack_path {
@@ -354,9 +369,13 @@ fn patch_installation(
                 Ok(pack_content) => {
                     ini_content = merge::apply_language_pack(&ini_content, &pack_content);
                 }
-                Err(e) => warnings.push(format!("Language pack decode failed: {e:#}")),
+                Err(e) => warnings.push(AppWarning::LanguagePackDecodeFailed {
+                    message: format!("{e:#}"),
+                }),
             },
-            Err(e) => warnings.push(format!("Language pack load failed: {e:#}")),
+            Err(e) => warnings.push(AppWarning::LanguagePackLoadFailed {
+                message: format!("{e:#}"),
+            }),
         }
     }
 
@@ -405,7 +424,11 @@ fn patch_installation(
 
         match module.generate_renames(&ctx) {
             Ok(renames) => all_renames.extend(renames),
-            Err(e) => warnings.push(format!("{}: {e}", module.name())),
+            Err(e) => warnings.push(AppWarning::ModuleRenameFailed {
+                module_id: module.id().to_string(),
+                module_name: module.name().to_string(),
+                message: format!("{e:#}"),
+            }),
         }
     }
 
@@ -434,11 +457,17 @@ fn patch_installation(
         }
 
         if module.needs_datacore() && datacore.is_none() {
-            warnings.push(format!("{}: skipped (datacore unavailable)", module.name()));
+            warnings.push(AppWarning::ModuleSkippedNoDatacore {
+                module_id: module.id().to_string(),
+                module_name: module.name().to_string(),
+            });
             continue;
         }
         if module.needs_locale() && locale_ref.is_none() {
-            warnings.push(format!("{}: skipped (locale unavailable)", module.name()));
+            warnings.push(AppWarning::ModuleSkippedNoLocale {
+                module_id: module.id().to_string(),
+                module_name: module.name().to_string(),
+            });
             continue;
         }
 
@@ -452,6 +481,7 @@ fn patch_installation(
 
         let module_name = module.name().to_string();
         let module_id = module.id().to_string();
+        let declared_replace = module.uses_replace_ops();
         match module.generate_patches(&ctx) {
             Ok(patches) => {
                 let produced = patches.len();
@@ -461,8 +491,17 @@ fn patch_installation(
                 // emitting multiple Replaces on one key) are a module-
                 // internal matter and not reported here.
                 let mut overrides: HashMap<String, u32> = HashMap::new();
+                let mut undeclared_replaces = 0u32;
                 for (key, op) in patches {
                     let is_replace = matches!(op, PatchOp::Replace(_));
+                    if is_replace && !declared_replace {
+                        // Module emitted a Replace without declaring
+                        // `uses_replace_ops()`. Drop the op so the
+                        // user's language pack value survives, and
+                        // count it for a warning at the end.
+                        undeclared_replaces += 1;
+                        continue;
+                    }
                     if is_replace
                         && let Some(prev_owner) = replace_owner.get(&key)
                         && prev_owner != &module_name
@@ -473,6 +512,13 @@ fn patch_installation(
                         replace_owner.insert(key.clone(), module_name.clone());
                     }
                     merged_patches.entry(key).or_default().push(op);
+                }
+                if undeclared_replaces > 0 {
+                    warnings.push(AppWarning::UndeclaredReplaceDropped {
+                        module_id: module_id.clone(),
+                        module_name: module_name.clone(),
+                        count: undeclared_replaces,
+                    });
                 }
                 let mut override_vec: Vec<ReplaceOverride> = overrides
                     .into_iter()
@@ -487,7 +533,11 @@ fn patch_installation(
                 });
             }
             Err(e) => {
-                warnings.push(format!("{module_name}: {e}"));
+                warnings.push(AppWarning::ModulePatchFailed {
+                    module_id: module_id.clone(),
+                    module_name: module_name.clone(),
+                    message: format!("{e:#}"),
+                });
             }
         }
     }
@@ -502,7 +552,9 @@ fn patch_installation(
 
     // Write output
     let output_dir = discovery::output_dir(install_path);
-    merge::write_output(&output_dir, &patched)?;
+    merge::write_output(&output_dir, &patched).map_err(|e| AppError::OutputWriteFailed {
+        message: format!("{e:#}"),
+    })?;
 
     // Write debug diff files to %LOCALAPPDATA%\sc-langpatch\debug\
     #[cfg(debug_assertions)]
@@ -607,7 +659,10 @@ impl ModuleNeeds {
 /// Produce a short deterministic hex hash of the active module configs.
 ///
 /// The hash changes whenever any module is enabled/disabled or its options
-/// change, making it suitable for use in debug diff filenames.
+/// change, making it suitable for use in debug diff filenames. Only used
+/// by the debug-build diff writer, so it's gated behind `debug_assertions`
+/// to keep release builds warning-free.
+#[cfg(debug_assertions)]
 fn options_hash(configs: &HashMap<String, ModuleConfig>) -> String {
     // Serialize to a sorted, stable JSON string and run FNV-1a over it.
     let mut sorted: Vec<_> = configs.iter().collect();

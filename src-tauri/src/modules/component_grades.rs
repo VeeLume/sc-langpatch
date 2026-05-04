@@ -50,6 +50,10 @@ impl Module for ComponentGrades {
         true
     }
 
+    fn uses_replace_ops(&self) -> bool {
+        true
+    }
+
     fn options(&self) -> Vec<ModuleOption> {
         vec![ModuleOption {
             id: "format".into(),

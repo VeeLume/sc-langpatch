@@ -6,6 +6,14 @@
     type OptionEntry,
     type OptionValue,
   } from "$lib/bindings";
+  import {
+    m,
+    moduleName,
+    moduleDescription,
+    optionLabel,
+    optionDescription,
+    choiceLabel,
+  } from "$lib/i18n";
 
   interface Props {
     modules: ModuleInfo[];
@@ -13,6 +21,8 @@
   }
 
   let { modules, onModulesChanged }: Props = $props();
+
+  let legendOpen = $state(false);
 
   // Track user-chosen option values per module: moduleId -> { optionName -> OptionValue }
   let moduleOptions = $state<Record<string, Record<string, OptionValue>>>({});
@@ -75,7 +85,27 @@
 </script>
 
 <section>
-  <h2>Modules</h2>
+  <div class="heading-row">
+    <h2>{m.modules_heading()}</h2>
+    <button
+      type="button"
+      class="info-btn"
+      onclick={() => (legendOpen = !legendOpen)}
+      aria-expanded={legendOpen}
+      aria-label={legendOpen
+        ? m.modules_hide_legend()
+        : m.modules_show_legend()}
+      title={legendOpen ? m.modules_hide_legend() : m.modules_show_legend()}
+    >
+      ?
+    </button>
+  </div>
+
+  {#if legendOpen}
+    <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+    <p class="legend">{@html m.modules_legend_html()}</p>
+  {/if}
+
   <div class="list">
     {#each modules as mod}
       <div class="module-item" class:module-disabled={!mod.enabled}>
@@ -87,12 +117,24 @@
           />
           <div class="module-info">
             <div class="module-title-row">
-              <span class="module-name">{mod.name}</span>
+              <span class="module-name">{moduleName(mod.id, mod.name)}</span>
               {#if mod.needs_datacore}
-                <span class="badge">DCB</span>
+                <span class="badge" title={m.modules_badge_dcb_tooltip()}>
+                  {m.modules_badge_dcb()}
+                </span>
+              {/if}
+              {#if mod.uses_replace_ops}
+                <span
+                  class="badge badge-warn"
+                  title={m.modules_badge_replace_tooltip()}
+                >
+                  {m.modules_badge_replace()}
+                </span>
               {/if}
             </div>
-            <span class="module-desc">{mod.description}</span>
+            <span class="module-desc">
+              {moduleDescription(mod.id, mod.description)}
+            </span>
           </div>
         </label>
 
@@ -112,16 +154,20 @@
                       })}
                   />
                   <span class="option-bool-text">
-                    <span class="option-bool-label">{opt.label}</span>
+                    <span class="option-bool-label">
+                      {optionLabel(mod.id, opt.id, opt.label)}
+                    </span>
                     {#if opt.description}
-                      <span class="option-bool-desc">{opt.description}</span>
+                      <span class="option-bool-desc">
+                        {optionDescription(mod.id, opt.id, opt.description)}
+                      </span>
                     {/if}
                   </span>
                 </label>
               {:else}
                 <div class="option-field">
                   <label class="option-field-label" for="{mod.id}-{opt.id}">
-                    {opt.label}
+                    {optionLabel(mod.id, opt.id, opt.label)}
                   </label>
                   {#if opt.kind.type === "Choice"}
                     <select
@@ -137,7 +183,14 @@
                         })}
                     >
                       {#each opt.kind.choices as choice}
-                        <option value={choice.value}>{choice.label}</option>
+                        <option value={choice.value}>
+                          {choiceLabel(
+                            mod.id,
+                            opt.id,
+                            choice.value,
+                            choice.label
+                          )}
+                        </option>
                       {/each}
                     </select>
                   {:else if opt.kind.type === "String"}
@@ -156,7 +209,9 @@
                     />
                   {/if}
                   {#if opt.description}
-                    <span class="option-field-desc">{opt.description}</span>
+                    <span class="option-field-desc">
+                      {optionDescription(mod.id, opt.id, opt.description)}
+                    </span>
                   {/if}
                 </div>
               {/if}
@@ -169,6 +224,58 @@
 </section>
 
 <style>
+  .heading-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin: 24px 0 8px;
+  }
+
+  .heading-row :global(h2) {
+    margin: 0;
+  }
+
+  .info-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    padding: 0;
+    border: 1px solid #444;
+    border-radius: 50%;
+    background: transparent;
+    color: #888;
+    font-size: 0.7rem;
+    font-weight: 600;
+    line-height: 1;
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+
+  .info-btn:hover,
+  .info-btn[aria-expanded="true"] {
+    color: #4cc9f0;
+    border-color: #4cc9f0;
+  }
+
+  .legend {
+    margin: 0 0 8px;
+    color: #aaa;
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+
+  .legend :global(strong) {
+    color: #e0e0e0;
+    font-weight: 600;
+  }
+
+  .badge[title],
+  .badge-warn {
+    cursor: help;
+  }
+
   .list {
     display: flex;
     flex-direction: column;
@@ -231,6 +338,11 @@
     background: #4361ee33;
     color: #4361ee;
     font-weight: 600;
+  }
+
+  .badge-warn {
+    background: #f4a26133;
+    color: #f4a261;
   }
 
   .module-options {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { PatchResult } from "$lib/bindings";
+  import { m, moduleName, formatError, formatWarning } from "$lib/i18n";
 
   interface Props {
     results: PatchResult[];
@@ -11,7 +12,7 @@
 
 {#if results.length > 0 || error}
   <section>
-    <h2>Status</h2>
+    <h2>{m.results_heading()}</h2>
     {#if error}
       <div class="error-box">{error}</div>
     {/if}
@@ -19,15 +20,22 @@
       {#each results as result}
         <div class="result-item" class:result-error={result.error}>
           {#if result.error}
-            <span class="result-icon">x</span>
-            <span>{result.channel}: {result.error}</span>
+            <span class="result-icon">{m.results_icon_error()}</span>
+            <span>{result.channel}: {formatError(result.error)}</span>
           {:else}
-            <span class="result-icon success">ok</span>
+            <span class="result-icon success">{m.results_icon_ok()}</span>
             <span>
-              {result.channel}: Applied {result.applied}/{result.total} patches
+              {m.results_applied({
+                channel: result.channel,
+                applied: result.applied,
+                total: result.total,
+              })}
               {#if result.warnings.length > 0}
-                — {result.warnings.length}
-                {result.warnings.length === 1 ? "warning" : "warnings"}
+                — {result.warnings.length === 1
+                  ? m.results_warnings_one()
+                  : m.results_warnings_other({
+                      count: result.warnings.length,
+                    })}
               {/if}
             </span>
           {/if}
@@ -37,14 +45,25 @@
           <div class="module-stats">
             {#each result.module_stats as stat}
               <div class="module-row">
-                <span class="module-name">{stat.module_name}</span>
-                <span class="module-count">{stat.patches} patches</span>
+                <span class="module-name">
+                  {moduleName(stat.module_id, stat.module_name)}
+                </span>
+                <span class="module-count">
+                  {stat.patches === 1
+                    ? m.results_module_patches_one()
+                    : m.results_module_patches_other({ count: stat.patches })}
+                </span>
               </div>
               {#each stat.replace_overrides as override}
                 <div class="override-row">
-                  ↳ overrides {override.keys}
-                  {override.keys === 1 ? "key" : "keys"} from
-                  <span class="module-name">{override.overrode_module}</span>
+                  {override.keys === 1
+                    ? m.results_overrides_one({
+                        module: override.overrode_module,
+                      })
+                    : m.results_overrides_other({
+                        count: override.keys,
+                        module: override.overrode_module,
+                      })}
                 </div>
               {/each}
             {/each}
@@ -52,7 +71,7 @@
         {/if}
 
         {#each result.warnings as warning}
-          <div class="warning">{warning}</div>
+          <div class="warning">{formatWarning(warning)}</div>
         {/each}
       {/each}
     </div>
@@ -122,10 +141,6 @@
     margin-left: 12px;
     color: #f4a261;
     font-size: 0.78rem;
-  }
-
-  .override-row .module-name {
-    color: #e9c46a;
   }
 
   .warning {

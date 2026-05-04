@@ -10,9 +10,12 @@
   import { ask } from "@tauri-apps/plugin-dialog";
   import { relaunch } from "@tauri-apps/plugin-process";
   import InstallationList from "$lib/InstallationList.svelte";
+  import LanguageNotice from "$lib/LanguageNotice.svelte";
   import LanguagePack from "$lib/LanguagePack.svelte";
+  import Settings from "$lib/Settings.svelte";
   import ModuleList from "$lib/ModuleList.svelte";
   import PatchResults from "$lib/PatchResults.svelte";
+  import { m, formatError } from "$lib/i18n";
 
   let installations = $state<Installation[]>([]);
   let selectedInstalls = $state<Set<string>>(new Set());
@@ -32,8 +35,8 @@
       if (!update?.available) return;
 
       const yes = await ask(
-        `Version ${update.version} is available. Update now?`,
-        { title: "SC LangPatch Update", kind: "info" }
+        m.update_dialog_body({ version: update.version }),
+        { title: m.update_dialog_title(), kind: "info" }
       );
       if (!yes) return;
 
@@ -52,7 +55,7 @@
       const installResult = await commands.getInstallations();
       const persistedChannels = await commands.getSelectedChannels();
       if (installResult.status === "error") {
-        error = installResult.error;
+        error = formatError(installResult.error);
         installations = [];
       } else {
         installations = installResult.data;
@@ -104,7 +107,7 @@
       if (patchResult.status === "ok") {
         results = patchResult.data;
       } else {
-        error = patchResult.error;
+        error = formatError(patchResult.error);
       }
     } catch (e) {
       error = String(e);
@@ -126,7 +129,7 @@
       if (result.status === "ok") {
         removeResults = result.data;
       } else {
-        error = result.error;
+        error = formatError(result.error);
       }
     } catch (e) {
       error = String(e);
@@ -141,20 +144,27 @@
 
 {#if updating}
   <div class="update-overlay">
-    <p>Installing update...</p>
+    <p>{m.app_installing_update()}</p>
   </div>
 {/if}
 
 <main>
+  {#snippet settingsAction()}
+    <Settings />
+  {/snippet}
+
   {#if loading}
-    <p class="status">Loading...</p>
+    <p class="status">{m.app_loading()}</p>
   {:else if error && installations.length === 0}
     <div class="error-box">{error}</div>
   {:else}
+    <LanguageNotice />
+
     <InstallationList
       {installations}
       selected={selectedInstalls}
       onToggle={toggleInstall}
+      headingAction={settingsAction}
     />
 
     <LanguagePack
@@ -164,7 +174,7 @@
 
     <ModuleList
       {modules}
-      onModulesChanged={(m) => (modules = m)}
+      onModulesChanged={(mods) => (modules = mods)}
     />
 
     <section class="actions">
@@ -173,22 +183,14 @@
         onclick={doPatch}
         disabled={patching || removing || selectedInstalls.size === 0}
       >
-        {#if patching}
-          Patching...
-        {:else}
-          Patch All
-        {/if}
+        {patching ? m.actions_patching() : m.actions_patch()}
       </button>
       <button
         class="remove-btn"
         onclick={doRemovePatch}
         disabled={patching || removing || selectedInstalls.size === 0}
       >
-        {#if removing}
-          Removing...
-        {:else}
-          Remove Patch
-        {/if}
+        {removing ? m.actions_removing() : m.actions_remove()}
       </button>
     </section>
 
@@ -198,11 +200,11 @@
           <div class="remove-result" class:error={!!r.error}>
             <span class="channel">{r.channel}</span>
             {#if r.error}
-              <span class="msg">{r.error}</span>
+              <span class="msg">{formatError(r.error)}</span>
             {:else if r.removed}
-              <span class="msg">Patch removed</span>
+              <span class="msg">{m.remove_result_removed()}</span>
             {:else}
-              <span class="msg muted">No patch found</span>
+              <span class="msg muted">{m.remove_result_none()}</span>
             {/if}
           </div>
         {/each}
