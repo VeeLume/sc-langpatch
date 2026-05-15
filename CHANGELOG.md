@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Pin pnpm version
+
 ## [0.4.1] - 2026-05-15
 
 ### Fixed
