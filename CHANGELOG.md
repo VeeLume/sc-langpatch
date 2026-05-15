@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Update svarog & sc-holotable dependencies for datacore v8 support which was introduced with 4.8.
+
 ## [0.4.0] - 2026-05-04
 
 ### Added

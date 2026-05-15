@@ -3547,7 +3547,7 @@ dependencies = [
 [[package]]
 name = "sc-contracts"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.3.0#cbc2b5547e04624d37422bd9c8eabdb7031e625e"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=datacore%2F4.8.0-live.11825000#9b86db5692d00245ff852a1059db2cd25d51f357"
 dependencies = [
  "sc-extract",
  "svarog-common",
@@ -3558,7 +3558,7 @@ dependencies = [
 [[package]]
 name = "sc-extract"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.3.0#cbc2b5547e04624d37422bd9c8eabdb7031e625e"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=datacore%2F4.8.0-live.11825000#9b86db5692d00245ff852a1059db2cd25d51f357"
 dependencies = [
  "chrono",
  "encoding_rs",
@@ -3578,7 +3578,7 @@ dependencies = [
 [[package]]
 name = "sc-extract-generated"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.3.0#cbc2b5547e04624d37422bd9c8eabdb7031e625e"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=datacore%2F4.8.0-live.11825000#9b86db5692d00245ff852a1059db2cd25d51f357"
 dependencies = [
  "svarog-common",
  "svarog-datacore",
@@ -3587,7 +3587,7 @@ dependencies = [
 [[package]]
 name = "sc-installs"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.3.0#cbc2b5547e04624d37422bd9c8eabdb7031e625e"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=datacore%2F4.8.0-live.11825000#9b86db5692d00245ff852a1059db2cd25d51f357"
 dependencies = [
  "aes",
  "cbc",
@@ -3635,7 +3635,7 @@ dependencies = [
 [[package]]
 name = "sc-weapons"
 version = "0.0.0"
-source = "git+https://github.com/VeeLume/sc-holotable.git?tag=sc-holotable%2Fv0.3.0#cbc2b5547e04624d37422bd9c8eabdb7031e625e"
+source = "git+https://github.com/VeeLume/sc-holotable.git?tag=datacore%2F4.8.0-live.11825000#9b86db5692d00245ff852a1059db2cd25d51f357"
 dependencies = [
  "sc-extract",
  "svarog-common",
@@ -4001,6 +4001,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "703d5c7ef118737c72f1af64ad2f6f8c5e1921f818cdcb97b8fe6fc69bf66214"
 
 [[package]]
+name = "similar"
+version = "2.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbbb5d9659141646ae647b42fe094daf6c6192d1620870b449d9557f748b2daa"
+
+[[package]]
 name = "siphasher"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4214,12 +4220,13 @@ dependencies = [
 [[package]]
 name = "svarog-common"
 version = "0.1.0"
-source = "git+https://github.com/19h/Svarog.git?rev=ce06ec67#ce06ec67c63212634cfe4fc21535371c5cd8ee69"
+source = "git+https://github.com/19h/Svarog.git?rev=7f06225#7f0622520e65e55feb386d79064bf75075fbc729"
 dependencies = [
  "byteorder",
  "crc32c",
  "memchr",
  "serde",
+ "similar",
  "thiserror 2.0.18",
  "zerocopy",
 ]
@@ -4227,7 +4234,7 @@ dependencies = [
 [[package]]
 name = "svarog-datacore"
 version = "0.1.0"
-source = "git+https://github.com/19h/Svarog.git?rev=ce06ec67#ce06ec67c63212634cfe4fc21535371c5cd8ee69"
+source = "git+https://github.com/19h/Svarog.git?rev=7f06225#7f0622520e65e55feb386d79064bf75075fbc729"
 dependencies = [
  "bumpalo",
  "byteorder",
@@ -4235,6 +4242,7 @@ dependencies = [
  "memchr",
  "memmap2",
  "quick-xml 0.37.5",
+ "regex",
  "rustc-hash",
  "serde",
  "serde_json",
@@ -4246,7 +4254,7 @@ dependencies = [
 [[package]]
 name = "svarog-p4k"
 version = "0.1.0"
-source = "git+https://github.com/19h/Svarog.git?rev=ce06ec67#ce06ec67c63212634cfe4fc21535371c5cd8ee69"
+source = "git+https://github.com/19h/Svarog.git?rev=7f06225#7f0622520e65e55feb386d79064bf75075fbc729"
 dependencies = [
  "aes",
  "byteorder",
