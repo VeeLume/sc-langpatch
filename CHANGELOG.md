@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-05-24
+
 ### Fixed
 - **Mission encounters no longer over-count ship spawns.** Previously
   the encounter renderer collapsed weighted alternatives (engine
