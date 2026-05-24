@@ -1,31 +1,46 @@
-//! Encounter rendering — structured slot data, then collapse passes.
+//! Encounter rendering — walks `Mission::encounters` and produces a
+//! formatted block describing what spawns.
 //!
-//! Input: a mission's `Vec<Encounter>`. Output: a multi-line block
-//! (without the `Encounters` header — caller adds that).
+//! The model is built around [`sc_contracts::SlotGroup`]: each group
+//! is one concurrent slot in the engine where one of the `options`
+//! fires per spawn (engine picks based on player profile / RNG /
+//! difficulty). v0.4.0 of sc-contracts preserves this boundary, so
+//! the renderer now respects it rather than flattening and trying to
+//! reconstruct the meaning afterward.
 //!
-//! Pipeline:
+//! Per-group rendering rules:
 //!
-//! 1. **Collect** — every `ShipSlot` / `EntitySlot` becomes one
-//!    [`SlotLine`] holding the resolved ships, tags, skill, role
-//!    hints, and the encounter / phase labels (with cleanup).
-//! 2. **Skill merge** — slots that share every other axis but differ
-//!    on AI skill collapse to a single line with `Skill 40-60`.
-//! 3. **Phase merge** — slots that share every other axis but differ
-//!    on phase label collapse via numeric-token range detection
-//!    (`Wave 1` + `Wave 2` + `Wave 3` → `Wave 1-3`).
-//! 4. **Dedup** — fully-identical lines collapse with a `(×N)` suffix.
-//! 5. **Render** — one logical line per remaining slot. When the
-//!    ship list spans multiple manufacturers (or many ships), the
-//!    body becomes a header line + manufacturer-grouped bullets.
+//! - **Singleton group** (`options.len() == 1`) → one line:
+//!   `Label: Nx ship · <pool>`
+//! - **Multiple options, only scaling axes vary** (skill alone, or
+//!   skill + count variation in the same CombatClass) → collapse to
+//!   a range: `Label: 1-3 ships · <pool>`
+//! - **Surface axis varies** (hull, ship class, effect like Distortion,
+//!   spawn flag like ArriveViaQT, faction, cargo, CombatClass) →
+//!   render as an alternatives block:
+//!   ```text
+//!   Label: One of (weighted):
+//!     3 ships · <pool> (Hard, Distortion)
+//!     4 ships · <pool> (Hard)
+//!   ```
 //!
-//! NPC encounters bypass this pipeline and collapse into a single
-//! `NPCs: N` total — see [`count_npcs`].
+//! NPC encounters bypass per-group rendering — they collapse into a
+//! single `NPCs: N` total (NPC spawn descriptions don't carry the
+//! same alternatives structure as ships/entities).
+//!
+//! Cargo / value / faction tags aggregate across every group into a
+//! single summary line at the end of the body.
 
-use sc_contracts::{Encounter, EntitySlot, NpcEncounter, ShipRegistry, ShipSlot, TagBag};
+use std::collections::HashSet;
+
+use sc_contracts::{
+    AxisKind, Encounter, EntityEncounter, EntitySlot, NpcEncounter, ShipEncounter, ShipRegistry,
+    ShipSlot, SlotGroup, TagBag,
+};
 use sc_extract::{LocaleMap, LocalizedItemCache, TagTree};
 
 use super::format::{collapse_variants, pretty_identifier};
-use crate::formatter_helpers::{apply_color, Color, NEWLINE};
+use crate::formatter_helpers::{Color, NEWLINE, apply_color};
 
 // ── Public entry point ─────────────────────────────────────────────────────
 
@@ -39,7 +54,11 @@ use crate::formatter_helpers::{apply_color, Color, NEWLINE};
 #[derive(Debug, Clone, Default)]
 pub struct EncounterRendering {
     pub body: String,
-    pub enemy_ship_total: i32,
+    /// `(min, max)` summed across enemy ship + entity groups. `min`
+    /// picks the smallest concurrent in each group's alternatives;
+    /// `max` the largest. `(0, 0)` when the mission has no enemy
+    /// ship/entity encounters.
+    pub enemy_ship_count_range: (i32, i32),
     pub enemy_npc_total: i32,
 }
 
@@ -53,97 +72,419 @@ pub fn render(
     manufacturer_prefixes: &[String],
     include_cargo: bool,
 ) -> EncounterRendering {
-    let mut slots: Vec<SlotLine> = Vec::new();
+    let mut lines: Vec<String> = Vec::new();
+    let mut all_summary_tags: Vec<String> = Vec::new();
+    let mut enemy_ship_min: i32 = 0;
+    let mut enemy_ship_max: i32 = 0;
     let mut npc_total: i32 = 0;
-    let mut enemy_ship_total: i32 = 0;
     let mut enemy_npc_total: i32 = 0;
 
     for enc in encounters {
         match enc {
-            Encounter::Ships(s) => {
-                let raw_encounter = clean_encounter_label(&s.variable_name);
-                let friendly = is_friendly_label(&raw_encounter);
-                for phase in &s.phases {
-                    let raw_phase = clean_phase_label(&phase.name, &raw_encounter);
-                    let (encounter_label, phase_label) =
-                        resolve_labels(&raw_encounter, &raw_phase);
-                    for slot in &phase.slots {
-                        if let Some(line) = build_ship_line(
-                            slot,
-                            tree,
-                            ships,
-                            cache,
-                            locale,
-                            manufacturer_prefixes,
-                            include_cargo,
-                            encounter_label.clone(),
-                            phase_label.clone(),
-                        ) {
-                            if !friendly {
-                                enemy_ship_total += slot.concurrent.max(1);
-                            }
-                            slots.push(line);
-                        }
-                    }
-                }
-            }
+            Encounter::Ships(s) => render_ship_encounter(
+                s,
+                tree,
+                ships,
+                cache,
+                locale,
+                manufacturer_prefixes,
+                include_cargo,
+                &mut lines,
+                &mut all_summary_tags,
+                &mut enemy_ship_min,
+                &mut enemy_ship_max,
+            ),
             Encounter::Npcs(s) => {
                 npc_total += count_npcs(s);
                 enemy_npc_total += count_enemy_npcs(s);
             }
-            Encounter::Entities(s) => {
-                let raw_encounter = clean_encounter_label(&s.variable_name);
-                for phase in &s.phases {
-                    let raw_phase = clean_phase_label(&phase.name, &raw_encounter);
-                    let (encounter_label, phase_label) =
-                        resolve_labels(&raw_encounter, &raw_phase);
-                    for slot in &phase.slots {
-                        if let Some(line) = build_entity_line(
-                            slot,
-                            tree,
-                            include_cargo,
-                            encounter_label.clone(),
-                            phase_label.clone(),
-                        ) {
-                            slots.push(line);
-                        }
-                    }
-                }
-            }
+            Encounter::Entities(s) => render_entity_encounter(
+                s,
+                tree,
+                include_cargo,
+                &mut lines,
+                &mut all_summary_tags,
+                &mut enemy_ship_min,
+                &mut enemy_ship_max,
+            ),
             Encounter::Unknown { .. } => {}
         }
     }
 
-    let collapsed = merge_slots(slots);
-    let collapsed = merge_phases(collapsed);
-    let collapsed = dedup_with_count(collapsed);
-
-    let mut out: Vec<String> = Vec::new();
-    for slot in &collapsed {
-        for rendered_line in render_slot(slot) {
-            out.push(rendered_line);
-        }
-    }
-
     if npc_total > 0 {
-        out.push(format!("NPCs: {npc_total}"));
+        lines.push(format!("NPCs: {npc_total}"));
     }
-
-    // Aggregate cargo / value / faction tags across every slot in
-    // the mission and surface as a single summary line. Per-slot
-    // tag rendering is dropped — repeating "General, LowValue,
-    // Mixed, Scraps Cargo" on every line was high-volume noise; the
-    // summary keeps the loot signal without burying the layout.
-    if let Some(summary) = aggregate_tag_summary(&collapsed) {
-        out.push(summary);
+    if let Some(summary) = aggregate_tag_summary(&all_summary_tags) {
+        lines.push(summary);
     }
 
     EncounterRendering {
-        body: out.join(NEWLINE),
-        enemy_ship_total,
+        body: lines.join(NEWLINE),
+        enemy_ship_count_range: (enemy_ship_min, enemy_ship_max),
         enemy_npc_total,
     }
 }
+
+// ── Ship encounter ─────────────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn render_ship_encounter(
+    enc: &ShipEncounter,
+    tree: &TagTree,
+    ships: &ShipRegistry,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
+    manufacturer_prefixes: &[String],
+    include_cargo: bool,
+    out: &mut Vec<String>,
+    summary_tags: &mut Vec<String>,
+    enemy_ship_min: &mut i32,
+    enemy_ship_max: &mut i32,
+) {
+    let raw_encounter = clean_encounter_label(&enc.variable_name);
+    let friendly = is_friendly_label(&raw_encounter);
+    for phase in &enc.phases {
+        let raw_phase = clean_phase_label(&phase.name, &raw_encounter);
+        let (encounter_label, phase_label) = resolve_labels(&raw_encounter, &raw_phase);
+        let label = label_with_phase(&encounter_label, &phase_label);
+
+        // Tally enemy counts across every group in this phase.
+        if !friendly {
+            for group in &phase.groups {
+                *enemy_ship_min += group.concurrent_range.0;
+                *enemy_ship_max += group.concurrent_range.1;
+            }
+        }
+
+        // Render every group's body lines (label-less, no leading indent).
+        // The layout is uniform: phase label on its own line, body
+        // indented one level. Multi-group phases stack their bodies
+        // under the same header. Inner structure inside a group (e.g.
+        // a "One of:" block) carries its own additional indent — we
+        // prepend the phase-level indent unconditionally.
+        let bodies: Vec<Vec<String>> = phase
+            .groups
+            .iter()
+            .map(|g| render_ship_group_body(g, ships, cache, locale, manufacturer_prefixes))
+            .collect();
+        if bodies.iter().any(|b| !b.is_empty()) {
+            out.push(format!("{label}:"));
+            for body in bodies {
+                for line in body {
+                    out.push(format!("  {line}"));
+                }
+            }
+        }
+
+        if include_cargo {
+            for group in &phase.groups {
+                collect_cargo_tags_from_ship_group(group, tree, summary_tags);
+            }
+        }
+    }
+}
+
+/// Render one [`SlotGroup<ShipSlot>`] as 1–N body lines (no label
+/// prefix — caller attaches the encounter / phase label or bullets).
+fn render_ship_group_body(
+    group: &SlotGroup<ShipSlot>,
+    ships: &ShipRegistry,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
+    manufacturer_prefixes: &[String],
+) -> Vec<String> {
+    let opt_count = group.options.len();
+    if opt_count == 0 {
+        return Vec::new();
+    }
+    if opt_count == 1 {
+        return render_ship_singleton(&group.options[0], ships, cache, locale, manufacturer_prefixes);
+    }
+    if !has_surface_variance(group) {
+        return render_ship_collapsed_range(group, ships, cache, locale, manufacturer_prefixes);
+    }
+    render_ship_alternatives(group, ships, cache, locale, manufacturer_prefixes)
+}
+
+/// Singleton group — one option, no alternatives boundary. Returns a
+/// single body line: `"3 ships · <pool> · Skill 80"`.
+fn render_ship_singleton(
+    opt: &ShipSlot,
+    ships: &ShipRegistry,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
+    manufacturer_prefixes: &[String],
+) -> Vec<String> {
+    let count = opt.concurrent.max(1);
+    let ship_list = ship_list_for_slot(opt, ships, cache, locale, manufacturer_prefixes);
+    let role = role_hint(&opt.positive)
+        .map(|h| format!(" · ({h})"))
+        .unwrap_or_default();
+    let body = compose_count_and_pool(count, count, &ship_list);
+    vec![format!("{body}{role}")]
+}
+
+/// Multiple alternatives but only scaling axes (skill) differ — the
+/// engine picks one tier and the ship pool is shared. Collapse to a
+/// concurrent range: `"1-3 ships · <pool> · Skill 10-30"`.
+fn render_ship_collapsed_range(
+    group: &SlotGroup<ShipSlot>,
+    ships: &ShipRegistry,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
+    manufacturer_prefixes: &[String],
+) -> Vec<String> {
+    let (lo, hi) = group.concurrent_range;
+    let ship_list = union_ship_lists(&group.options, ships, cache, locale, manufacturer_prefixes);
+    let role = group
+        .options
+        .iter()
+        .find_map(|o| role_hint(&o.positive))
+        .map(|h| format!(" · ({h})"))
+        .unwrap_or_default();
+    let body = compose_count_and_pool(lo, hi, &ship_list);
+    vec![format!("{body}{role}")]
+}
+
+/// Surface axis varies (hull / ship class / Distortion / etc.) —
+/// render an `"One of:"` header line followed by one indented body
+/// line per option. Per-option skill is appended as the engine often
+/// pairs surface variance with different skill tiers.
+fn render_ship_alternatives(
+    group: &SlotGroup<ShipSlot>,
+    ships: &ShipRegistry,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
+    manufacturer_prefixes: &[String],
+) -> Vec<String> {
+    let header_word = if group.weight_uniform {
+        "One of"
+    } else {
+        "One of (weighted)"
+    };
+    let mut out = vec![format!("{header_word}:")];
+    let weight_sum: f32 = group.options.iter().map(|o| o.weight).sum();
+    for (idx, opt) in group.options.iter().enumerate() {
+        let count = opt.concurrent.max(1);
+        let ship_list = ship_list_for_slot(opt, ships, cache, locale, manufacturer_prefixes);
+        let body = compose_count_and_pool(count, count, &ship_list);
+        let pct = if !group.weight_uniform && weight_sum > 0.0 {
+            format!(" ({:.0}%)", opt.weight / weight_sum * 100.0)
+        } else {
+            String::new()
+        };
+        let axis_suffix = surface_axis_suffix(group, idx);
+        out.push(format!("  {body}{pct}{axis_suffix}"));
+    }
+    out
+}
+
+/// True when at least one player-meaningful axis varies across the
+/// group's options. Skill (HumanPilotNN) is intentionally excluded —
+/// that's pure scaling noise the player doesn't need surfaced.
+fn has_surface_variance(group: &SlotGroup<ShipSlot>) -> bool {
+    let a = &group.axes;
+    a.hull.varies
+        || a.ship_class.varies
+        || a.effect.varies
+        || a.spawn_flags.varies
+        || a.faction.varies
+        || a.cargo_size.varies
+        || a.value.varies
+        || a.combat_class.varies
+}
+
+/// Compose " · " suffix listing every surface-axis tag this specific
+/// option carries that varies within the group. Skip the skill axis
+/// (surfaced separately via [`slot_skill_suffix`]) and the spawn-role
+/// axis (Defenders / Target, already implied by the label).
+///
+/// Output example: ` (Hard, with Distortion)` or ` (CombatShip)`.
+fn surface_axis_suffix(group: &SlotGroup<ShipSlot>, opt_idx: usize) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let axes = &group.axes;
+
+    // Surface only the player-relevant axes that the rest of the
+    // display can't communicate:
+    //
+    // - `Hull` is OMITTED — the resolved ship pool already names the
+    //   hull (`135c` vs `Avenger Titan Renegade`), so a tag suffix
+    //   like `(135c)` would just repeat raw underscore-tag form.
+    // - `CombatClass` is OMITTED — surfaced in the encounter header
+    //   as a single tier or range, see `combat_class_range`.
+    // - `ShipClass` is INCLUDED but filtered: the
+    //   `Missions / VehicleType / Ship / *` subtree mixes broad-class
+    //   names (CombatShip, LargeCombatShip, HeavyInterceptor) with
+    //   loadout markers (Distortion). Broad-class tags are redundant
+    //   with the ship pool and dropped via [`is_broad_ship_class_tag`];
+    //   the loadout markers survive.
+    //
+    // What's left is genuinely orthogonal information the ship-pool
+    // and header don't convey: weapon effects, spawn behavior
+    // (ArriveViaQT), cargo/value variance between options, and
+    // faction overrides.
+    for (axis_kind, axis_values) in [
+        (AxisKind::Effect, &axes.effect),
+        (AxisKind::ShipClass, &axes.ship_class),
+        (AxisKind::SpawnFlags, &axes.spawn_flags),
+        (AxisKind::CargoSize, &axes.cargo_size),
+        (AxisKind::Value, &axes.value),
+        (AxisKind::Faction, &axes.faction),
+    ] {
+        if !axis_values.varies {
+            continue;
+        }
+        let Some(per) = axis_values.per_option.get(opt_idx) else {
+            continue;
+        };
+        for (_, name) in per {
+            if axis_kind == AxisKind::ShipClass && is_broad_ship_class_tag(name) {
+                continue;
+            }
+            parts.push(format_axis_value(axis_kind, name));
+        }
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join(", "))
+    }
+}
+
+/// True for `Missions / VehicleType / Ship / *` tags that describe a
+/// broad ship class (CombatShip, LargeCombatShip, HeavyInterceptor,
+/// etc.) — these are already conveyed by the resolved ship pool and
+/// add visual noise when repeated as a suffix. Loadout-style tags
+/// under the same path (Distortion, future variants) survive the
+/// filter and surface in the suffix.
+fn is_broad_ship_class_tag(name: &str) -> bool {
+    name == "CombatShip"
+        || name == "LargeCombatShip"
+        || name.ends_with("Interceptor")
+        || name.ends_with("Fighter")
+        || name.ends_with("Bomber")
+}
+
+/// Per-axis cosmetic formatting for a single tag value. E.g.,
+/// `Distortion` reads better as `"with Distortion"` than bare
+/// `"Distortion"`. The classifier-driven approach means we don't
+/// hardcode tag names — we hardcode per-AXIS phrasing.
+fn format_axis_value(axis: AxisKind, name: &str) -> String {
+    match axis {
+        AxisKind::Effect => format!("with {name}"),
+        AxisKind::SpawnFlags => name.to_string(),
+        AxisKind::Hull | AxisKind::ShipClass => name.to_string(),
+        AxisKind::CombatClass => name.to_string(),
+        AxisKind::CargoSize | AxisKind::Value | AxisKind::Faction => name.to_string(),
+        _ => name.to_string(),
+    }
+}
+
+/// Render the body of one slot or alternative as `"3x Cutlass, Sabre"`
+/// (singleton) or `"1-3x Scythe"` (collapsed range). The `Nx` form
+/// keeps dense waves readable when many alternatives stack — `"N ships"`
+/// added noticeable noise in real-world bounty waves. When the ship
+/// pool is empty (unresolved tag query) the count stands alone.
+fn compose_count_and_pool(lo: i32, hi: i32, ship_list: &[String]) -> String {
+    let count_str = if lo == hi {
+        format!("{lo}x")
+    } else {
+        format!("{lo}-{hi}x")
+    };
+    if ship_list.is_empty() {
+        count_str
+    } else {
+        format!("{count_str} {}", ship_list.join(", "))
+    }
+}
+
+// ── Entity encounter ───────────────────────────────────────────────────────
+
+#[allow(clippy::too_many_arguments)]
+fn render_entity_encounter(
+    enc: &EntityEncounter,
+    tree: &TagTree,
+    include_cargo: bool,
+    out: &mut Vec<String>,
+    summary_tags: &mut Vec<String>,
+    enemy_ship_min: &mut i32,
+    enemy_ship_max: &mut i32,
+) {
+    let raw_encounter = clean_encounter_label(&enc.variable_name);
+    let friendly = is_friendly_label(&raw_encounter);
+    for phase in &enc.phases {
+        let raw_phase = clean_phase_label(&phase.name, &raw_encounter);
+        let (encounter_label, phase_label) = resolve_labels(&raw_encounter, &raw_phase);
+        let label = label_with_phase(&encounter_label, &phase_label);
+
+        if !friendly {
+            for group in &phase.groups {
+                *enemy_ship_min += group.concurrent_range.0;
+                *enemy_ship_max += group.concurrent_range.1;
+            }
+        }
+
+        let bodies: Vec<Vec<String>> = phase
+            .groups
+            .iter()
+            .map(render_entity_group_body)
+            .collect();
+        if bodies.iter().any(|b| !b.is_empty()) {
+            out.push(format!("{label}:"));
+            for body in bodies {
+                for line in body {
+                    out.push(format!("  {line}"));
+                }
+            }
+        }
+
+        if include_cargo {
+            for group in &phase.groups {
+                collect_cargo_tags_from_entity_group(group, tree, summary_tags);
+            }
+        }
+    }
+}
+
+fn render_entity_group_body(group: &SlotGroup<EntitySlot>) -> Vec<String> {
+    let opt_count = group.options.len();
+    if opt_count == 0 {
+        return Vec::new();
+    }
+    if opt_count == 1 {
+        let opt = &group.options[0];
+        let n = opt.amount.max(1);
+        return vec![format!("{n} entit{}", if n == 1 { "y" } else { "ies" })];
+    }
+    // Multiple alternatives — only render as a collapsed range for now.
+    // Entity encounters don't have an established renderer for surface
+    // variance (no per-entity ship-pool resolution), so even when tags
+    // differ we just show the count range.
+    let (lo, hi) = group.concurrent_range;
+    let body = if lo == hi {
+        format!("{lo} entit{}", if lo == 1 { "y" } else { "ies" })
+    } else {
+        format!("{lo}-{hi} entities")
+    };
+    vec![body]
+}
+
+// ── Label rendering ────────────────────────────────────────────────────────
+
+/// Header label for one slot — the encounter name plus any surviving
+/// phase qualifier in brackets. Wrapped in `Color::Underline` so the
+/// labels stand out as scan anchors when the player skims a long
+/// encounter list.
+fn label_with_phase(encounter: &str, phase: &str) -> String {
+    let raw = if phase.is_empty() {
+        encounter.to_string()
+    } else {
+        format!("{encounter} [{phase}]")
+    };
+    apply_color(Color::Underline, raw)
+}
+
+// ── Friendly label detection ───────────────────────────────────────────────
 
 /// True when an encounter label clearly names ally / escort / friendly
 /// content. Enemy is the default — generator names without these
@@ -154,37 +495,12 @@ fn is_friendly_label(label: &str) -> bool {
     tokens.iter().any(|t| {
         matches!(
             *t,
-            "allied"
-                | "allies"
-                | "ally"
-                | "friendly"
-                | "escort"
-                | "attacked"
+            "allied" | "allies" | "ally" | "friendly" | "escort" | "attacked"
         )
     })
 }
 
-/// Same shape as [`count_npcs`] but only sums slots NOT marked as
-/// `mission_allied_marker`. A phase whose every slot is allied is
-/// dropped from the count entirely; mixed phases (rare) count as
-/// enemy because the worst case for the player is enemies present.
-fn count_enemy_npcs(encounter: &NpcEncounter) -> i32 {
-    let mut total = 0;
-    for phase in &encounter.phases {
-        let all_friendly = !phase.slots.is_empty()
-            && phase.slots.iter().all(|s| s.mission_allied_marker);
-        if all_friendly {
-            continue;
-        }
-        match parse_count_from_phase_name(&phase.name) {
-            Some(n) => total += n,
-            None => total += phase.slots.len() as i32,
-        }
-    }
-    total
-}
-
-// ── Encounter / phase label cleanup ────────────────────────────────────────
+// ── Encounter / phase label cleanup (unchanged from pre-v0.4) ─────────────
 
 /// Pretty-print an encounter `variable_name` and strip generator
 /// boilerplate that adds no information for the player.
@@ -204,11 +520,6 @@ fn clean_encounter_label(variable_name: &str) -> String {
 ///    corpus scan; rare prefixes are intentionally not on it.
 ///
 /// Both passes loop so chained / stacked patterns peel cleanly.
-/// Used by both [`clean_encounter_label`] and [`clean_phase_label`]
-/// because phases also carry the same wrapper-encoded generator
-/// names — without stripping at the phase layer, when the phase
-/// later supersedes the encounter, the wrapper text leaks back
-/// into the rendered label.
 fn strip_generator_chrome(label: String) -> String {
     const FILLER_SUFFIXES: &[&str] = &[
         " Ship Spawn Descriptions",
@@ -216,8 +527,6 @@ fn strip_generator_chrome(label: String) -> String {
         " Spawn Descriptions",
         " Spawn Description",
     ];
-    // Wrapper prefixes — stripped only when followed by a space, so
-    // `Final Beat` doesn't eat `Final Beats Mission`.
     const WRAPPER_PREFIXES: &[&str] = &[
         "Escort Ship To Landing Area ",
         "Escort Ship From Landing Area ",
@@ -254,23 +563,7 @@ fn strip_generator_chrome(label: String) -> String {
 
 /// Pretty-print a phase name, but return an empty string when the
 /// phase is just an echo of the encounter label.
-///
-/// Drop conditions, in order:
-/// - exact match (case-insensitive)
-/// - one is the other extended by a trailing token (`Ace Pilot` +
-///   `Ace Pilot Ship` → drop, `Mission Targets` + `Mission Targets
-///   Defenders` → drop)
-/// - every phase token is a singular/plural stem of some encounter
-///   token (`Mission Targets` + `Target` → drop, since "target" is
-///   the stem of "targets")
-///
-/// Stops short of richer morphology — `Allied` vs `Allies` is kept
-/// because the stems differ (`allie` vs `allied`), and the
-/// distinction may genuinely matter.
 fn clean_phase_label(phase_name: &str, encounter_label: &str) -> String {
-    // Apply the same generator-chrome strip as encounters — when
-    // a phase later supersedes the encounter, the unfiltered phase
-    // text would otherwise leak the wrappers back into the label.
     let pretty = strip_generator_chrome(pretty_identifier(phase_name));
     if pretty.is_empty() {
         return String::new();
@@ -291,9 +584,6 @@ fn clean_phase_label(phase_name: &str, encounter_label: &str) -> String {
     pretty
 }
 
-/// True when every whitespace-separated token in `phase` is
-/// [`stem_equivalent`] to some token in `encounter`. Both inputs
-/// should already be lowercase.
 fn phase_tokens_subset_of_encounter(phase: &str, encounter: &str) -> bool {
     let phase_tokens: Vec<&str> = phase.split_whitespace().collect();
     if phase_tokens.is_empty() {
@@ -305,18 +595,6 @@ fn phase_tokens_subset_of_encounter(phase: &str, encounter: &str) -> bool {
         .all(|pt| enc_tokens.iter().any(|et| stem_equivalent(pt, et)))
 }
 
-/// Two tokens look like inflections of the same root word when they
-/// share a long common prefix and differ by only a few trailing
-/// characters. Threshold: at least 4 leading chars in common AND no
-/// more than 3 trailing chars total of difference.
-///
-/// Catches the inflection patterns that show up in CIG mission
-/// labels — singular/plural (`Target` ↔ `Targets`), past-tense vs
-/// plural-of-past (`Allied` ↔ `Allies`), noun/verb-form
-/// (`Defender` ↔ `Defending`) — without over-matching short or
-/// unrelated words. `Cat` ↔ `Cats` falls below the 4-char floor and
-/// is intentionally not matched (sub-4-char tokens don't appear in
-/// mission labels in practice).
 fn stem_equivalent(a: &str, b: &str) -> bool {
     let al = a.to_lowercase();
     let bl = b.to_lowercase();
@@ -329,14 +607,6 @@ fn stem_equivalent(a: &str, b: &str) -> bool {
 }
 
 /// Decide the final `(encounter, phase)` label pair for display.
-///
-/// Most pairs are passed through. The non-trivial case: when the
-/// phase is *more specific* than the encounter (shares at least one
-/// token AND has additional content), the phase replaces the
-/// encounter and the phase slot becomes empty. This collapses
-/// `Wave Ships [Wave 1]` to just `Wave 1`, since the encounter's
-/// `Wave Ships` is generic boilerplate next to the specific
-/// `Wave 1`.
 fn resolve_labels(encounter: &str, phase: &str) -> (String, String) {
     if phase.is_empty() {
         return (encounter.to_string(), String::new());
@@ -347,8 +617,6 @@ fn resolve_labels(encounter: &str, phase: &str) -> (String, String) {
     (encounter.to_string(), phase.to_string())
 }
 
-/// True when phase shares at least one stem-equivalent token with
-/// encounter AND has additional tokens beyond those matches.
 fn phase_supersedes_encounter(phase: &str, encounter: &str) -> bool {
     let phase_lower = phase.to_lowercase();
     let enc_lower = encounter.to_lowercase();
@@ -366,139 +634,11 @@ fn phase_supersedes_encounter(phase: &str, encounter: &str) -> bool {
     shared > 0 && phase_tokens.len() > shared
 }
 
-// ── Slot collection ───────────────────────────────────────────────────────
+// ── Ship-pool resolution ───────────────────────────────────────────────────
 
-/// One slot's resolved data, keyed by every axis the collapse passes
-/// might merge or compare.
-#[derive(Debug, Clone)]
-struct SlotLine {
-    encounter_label: String,
-    phase_label: String,
-    /// Sum of source-slot `concurrent` after merge. For a fresh slot
-    /// this is the slot's own concurrent count.
-    concurrent: i32,
-    body: BodyKind,
-    tags: Vec<String>,
-    /// Unique skill levels across merged slots. Single-element vec
-    /// for a fresh slot; range-merged slots accumulate distinct values.
-    skills: Vec<u32>,
-    ace: bool,
-    role_hint: Option<&'static str>,
-    /// Number of source slots merged into this line. 1 = unmerged.
-    /// Drives the `One of:` vs `{N}x:` distinction in the renderer:
-    /// a merged group of single-ship single-concurrent sources reads
-    /// as alternatives ("engine picks one of these"), distinct from
-    /// a single source slot whose pool of ships happens to be large
-    /// (still reads as "{conc}x from this pool").
-    source_slot_count: usize,
-    /// True iff every source slot had `ship_count == 1` and
-    /// `concurrent == 1`. AND-folded during merge.
-    all_singleton_sources: bool,
-    /// Multiplicity from the post-merge dedup pass. 1 for a fresh slot.
-    count: usize,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum BodyKind {
-    /// Resolved ship pool — short hull names with manufacturer
-    /// prefix stripped. `collapse_variants` already folded same-hull
-    /// variants together.
-    Ships(Vec<String>),
-    /// Slot's tag query didn't resolve any candidates — coarse class
-    /// label from `mission_tags`.
-    RoleOnly(String),
-    /// Generic entity slot (no candidate resolution available).
-    Entities(i32),
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_ship_line(
-    slot: &ShipSlot,
-    tree: &TagTree,
-    ships_reg: &ShipRegistry,
-    cache: &LocalizedItemCache,
-    locale: &LocaleMap,
-    manufacturer_prefixes: &[String],
-    include_cargo: bool,
-    encounter_label: String,
-    phase_label: String,
-) -> Option<SlotLine> {
-    let ships = ship_list_for_slot(slot, ships_reg, cache, locale, manufacturer_prefixes);
-    let body = if !ships.is_empty() {
-        BodyKind::Ships(ships)
-    } else if let Some(role) = role_hint_for_empty_slot(&slot.positive, tree) {
-        BodyKind::RoleOnly(role.to_string())
-    } else {
-        return None;
-    };
-
-    let tags = if include_cargo {
-        cargo_tags(&slot.positive, tree)
-    } else {
-        Vec::new()
-    };
-
-    let skills = match slot.positive.ai_skill() {
-        Some(s) => vec![s],
-        None => Vec::new(),
-    };
-
-    let concurrent = slot.concurrent.max(1);
-    let ship_count = match &body {
-        BodyKind::Ships(s) => s.len(),
-        _ => 0,
-    };
-    let all_singleton_sources = ship_count == 1 && concurrent == 1;
-
-    Some(SlotLine {
-        encounter_label,
-        phase_label,
-        concurrent,
-        body,
-        tags,
-        skills,
-        ace: slot.positive.ace_pilot(),
-        role_hint: role_hint(&slot.positive),
-        source_slot_count: 1,
-        all_singleton_sources,
-        count: 1,
-    })
-}
-
-fn build_entity_line(
-    slot: &EntitySlot,
-    tree: &TagTree,
-    include_cargo: bool,
-    encounter_label: String,
-    phase_label: String,
-) -> Option<SlotLine> {
-    let tags = if include_cargo {
-        cargo_tags(&slot.positive, tree)
-    } else {
-        Vec::new()
-    };
-    let skills = match slot.positive.ai_skill() {
-        Some(s) => vec![s],
-        None => Vec::new(),
-    };
-    Some(SlotLine {
-        encounter_label,
-        phase_label,
-        concurrent: slot.amount.max(1),
-        body: BodyKind::Entities(slot.amount.max(1)),
-        tags,
-        skills,
-        ace: false,
-        role_hint: None,
-        source_slot_count: 1,
-        all_singleton_sources: false,
-        count: 1,
-    })
-}
-
-/// Walk the slot's candidates, drop empty display names, dedupe,
-/// strip the manufacturer prefix, sort by size+name, then collapse
-/// same-hull variants.
+/// Walk a slot's candidates, drop empty display names, dedupe, strip
+/// the manufacturer prefix, sort by size+name, then collapse same-hull
+/// variants.
 fn ship_list_for_slot(
     slot: &ShipSlot,
     ships: &ShipRegistry,
@@ -524,8 +664,28 @@ fn ship_list_for_slot(
     collapse_variants(&names)
 }
 
-/// Strip a known manufacturer prefix from a ship display name.
-/// Returns the input unchanged when no prefix matches.
+/// Union the ship lists across multiple alternatives — used for
+/// scaling-only collapsed groups where alternatives should agree but
+/// we union defensively in case `HumanPilotNN` tags actually do
+/// filter some candidates differently.
+fn union_ship_lists(
+    options: &[ShipSlot],
+    ships: &ShipRegistry,
+    cache: &LocalizedItemCache,
+    locale: &LocaleMap,
+    manufacturer_prefixes: &[String],
+) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    for opt in options {
+        for n in ship_list_for_slot(opt, ships, cache, locale, manufacturer_prefixes) {
+            if !seen.contains(&n) {
+                seen.push(n);
+            }
+        }
+    }
+    seen
+}
+
 fn strip_manufacturer(prefixes: &[String], name: &str) -> String {
     for prefix in prefixes {
         if let Some(rest) = name.strip_prefix(prefix.as_str()) {
@@ -535,8 +695,96 @@ fn strip_manufacturer(prefixes: &[String], name: &str) -> String {
     name.to_string()
 }
 
-/// Concatenated cargo + value-tier descriptors for a ship/entity slot.
-fn cargo_tags(bag: &TagBag, tree: &TagTree) -> Vec<String> {
+// ── CombatClass range (for the encounter heading) ─────────────────────────
+
+/// Canonical ordering of `AI/Ship/CombatClass` tags from easiest to
+/// hardest. Tags outside this list are unrecognised tier extensions
+/// and excluded from the range. Order matters — it drives the
+/// `VeryEasy-Hard` style range display.
+const COMBAT_CLASS_ORDER: &[&str] = &[
+    "VeryEasy", "Easy", "Medium", "Hard", "VeryHard", "Super",
+];
+const COMBAT_CLASS_ORDER_LEN: usize = COMBAT_CLASS_ORDER.len();
+
+/// Compute the mission's CombatClass range across every ship-spawn
+/// alternative. Returns:
+///
+/// - `Some("VeryEasy")` — every group's options share one tier.
+/// - `Some("Easy-Hard")` — alternatives span multiple tiers (one
+///   option is Easy, another is Hard, etc.).
+/// - `None` — no group carries any recognised CombatClass tag.
+///
+/// Walks both `shared_tags` (tier agreed across all options in a
+/// group) AND `axes.combat_class.per_option` (tier differs across
+/// alternatives within a group). This covers Settle a Score-style
+/// single-tier missions and mixed-tier alternatives like the
+/// BountyHunter "engine picks Easy OR Medium" pattern.
+///
+/// Lives in langpatch rather than sc-contracts because it's a
+/// display concern (player-facing tier banner) — promote upstream
+/// if a second consumer needs it.
+pub fn combat_class_range(encounters: &[Encounter]) -> Option<String> {
+    let mut indices: HashSet<usize> = HashSet::new();
+    let visit = |name: &str, indices: &mut HashSet<usize>| {
+        if let Some(i) = COMBAT_CLASS_ORDER.iter().position(|&o| o == name) {
+            indices.insert(i);
+        }
+    };
+    for enc in encounters {
+        let Encounter::Ships(s) = enc else { continue };
+        for phase in &s.phases {
+            for group in &phase.groups {
+                for tag in &group.shared_tags {
+                    if tag.kind == AxisKind::CombatClass {
+                        visit(&tag.name, &mut indices);
+                    }
+                }
+                if group.axes.combat_class.varies {
+                    for opt_tags in &group.axes.combat_class.per_option {
+                        for (_, name) in opt_tags {
+                            visit(name, &mut indices);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if indices.is_empty() {
+        return None;
+    }
+    let lo = *indices.iter().min().unwrap();
+    let hi = *indices.iter().max().unwrap();
+    if lo == hi {
+        Some(COMBAT_CLASS_ORDER[lo].to_string())
+    } else {
+        Some(format!(
+            "{}-{}",
+            COMBAT_CLASS_ORDER[lo],
+            COMBAT_CLASS_ORDER[hi.min(COMBAT_CLASS_ORDER_LEN - 1)]
+        ))
+    }
+}
+
+// ── Role hints ─────────────────────────────────────────────────────────────
+
+/// Per-slot role hint surfaced from typed `TagBag` predicates.
+fn role_hint(bag: &TagBag) -> Option<&'static str> {
+    if bag.is_salvage_target() {
+        Some("salvage target")
+    } else if bag.is_cargo_recovery() {
+        Some("cargo recovery")
+    } else if bag.is_pre_damaged_wreck() {
+        Some("pre-damaged wreck")
+    } else {
+        None
+    }
+}
+
+// ── Cargo / value tag collection ───────────────────────────────────────────
+
+/// Pull every cargo / value tag off this slot for the summary line.
+/// Returned tags are intended to flow into [`aggregate_tag_summary`].
+fn cargo_tags_from_bag(bag: &TagBag, tree: &TagTree) -> Vec<String> {
     let mut parts: Vec<String> = Vec::new();
     for c in bag.cargo(tree) {
         let s = c.to_string();
@@ -552,374 +800,57 @@ fn cargo_tags(bag: &TagBag, tree: &TagTree) -> Vec<String> {
     parts
 }
 
-/// Per-slot role hint surfaced from typed `TagBag` predicates.
-fn role_hint(bag: &TagBag) -> Option<&'static str> {
-    if bag.is_salvage_target() {
-        Some("salvage target")
-    } else if bag.is_cargo_recovery() {
-        Some("cargo recovery")
-    } else if bag.is_pre_damaged_wreck() {
-        Some("pre-damaged wreck")
-    } else {
-        None
-    }
-}
-
-/// Coarse class label for a slot whose tag query didn't resolve any
-/// candidate ships.
-fn role_hint_for_empty_slot(bag: &TagBag, tree: &TagTree) -> Option<&'static str> {
-    for t in bag.mission_tags(tree) {
-        match t {
-            "DefendShip" => return Some("transport/cargo"),
-            "CombatShip" | "LargeCombatShip" => return Some("capital"),
-            _ => {}
-        }
-    }
-    None
-}
-
-// ── Collapse passes ────────────────────────────────────────────────────────
-
-/// Aggressive merge — fold every slot in the same `(encounter,
-/// phase, tags, role_hint)` cell into one line.
-///
-/// Same-cell slots that differ on ships, skill, or concurrent get
-/// combined: ships are unioned (preserving first-seen order),
-/// skills accumulate for range rendering, and concurrent counts
-/// **sum** (interpreted as "this many distinct spawns in this
-/// phase across all configurations"). Body kinds must match
-/// (ships+ships, entity+entity); a `RoleOnly` slot doesn't merge
-/// with a `Ships` slot even if other axes match.
-fn merge_slots(slots: Vec<SlotLine>) -> Vec<SlotLine> {
-    let mut out: Vec<SlotLine> = Vec::new();
-    for slot in slots {
-        let position = out.iter().position(|other| {
-            other.encounter_label == slot.encounter_label
-                && other.phase_label == slot.phase_label
-                && other.tags == slot.tags
-                && other.role_hint == slot.role_hint
-                && std::mem::discriminant(&other.body) == std::mem::discriminant(&slot.body)
-        });
-        match position {
-            Some(idx) => {
-                let target = &mut out[idx];
-                match (&mut target.body, slot.body) {
-                    (BodyKind::Ships(existing), BodyKind::Ships(incoming)) => {
-                        for n in incoming {
-                            if !existing.contains(&n) {
-                                existing.push(n);
-                            }
-                        }
-                    }
-                    (BodyKind::Entities(existing_amount), BodyKind::Entities(new_amount)) => {
-                        *existing_amount = (*existing_amount).max(new_amount);
-                    }
-                    (BodyKind::RoleOnly(_), BodyKind::RoleOnly(_)) => {
-                        // Same role label — nothing to merge into the body.
-                    }
-                    _ => unreachable!(
-                        "discriminant guard above should have rejected this combination"
-                    ),
-                }
-                for s in slot.skills {
-                    if !target.skills.contains(&s) {
-                        target.skills.push(s);
-                    }
-                }
-                target.concurrent += slot.concurrent;
-                target.ace = target.ace || slot.ace;
-                target.source_slot_count += slot.source_slot_count;
-                target.all_singleton_sources =
-                    target.all_singleton_sources && slot.all_singleton_sources;
-            }
-            None => out.push(slot),
-        }
-    }
-    out
-}
-
-/// Merge slots that share every axis except phase label. Phase
-/// labels collapse via numeric-token range detection: `Wave 1` +
-/// `Wave 2` + `Wave 3` → `Wave 1-3`.
-fn merge_phases(slots: Vec<SlotLine>) -> Vec<SlotLine> {
-    let mut groups: Vec<(SlotLine, Vec<String>)> = Vec::new();
-    for slot in slots {
-        let phase = slot.phase_label.clone();
-        let merge_target = groups.iter_mut().find(|(other, _)| {
-            other.encounter_label == slot.encounter_label
-                && other.concurrent == slot.concurrent
-                && other.body == slot.body
-                && other.tags == slot.tags
-                && other.skills == slot.skills
-                && other.ace == slot.ace
-                && other.role_hint == slot.role_hint
-                && other.source_slot_count == slot.source_slot_count
-                && other.all_singleton_sources == slot.all_singleton_sources
-        });
-        match merge_target {
-            Some((_, phases)) => {
-                if !phases.contains(&phase) {
-                    phases.push(phase);
-                }
-            }
-            None => groups.push((slot, vec![phase])),
-        }
-    }
-    groups
-        .into_iter()
-        .map(|(mut slot, phases)| {
-            slot.phase_label = merge_phase_labels(&phases);
-            slot
-        })
-        .collect()
-}
-
-/// Collapse a list of phase labels into one display string.
-///
-/// - Single label: pass through.
-/// - Multiple labels with same token count differing only on a
-///   single numeric token: replace that token with `min-max`.
-/// - Anything else: comma-join with first-seen order preserved.
-fn merge_phase_labels(labels: &[String]) -> String {
-    let nonempty: Vec<&str> = labels.iter().map(|s| s.as_str()).filter(|s| !s.is_empty()).collect();
-    if nonempty.is_empty() {
-        return String::new();
-    }
-    if nonempty.len() == 1 {
-        return nonempty[0].to_string();
-    }
-
-    let token_lists: Vec<Vec<&str>> = nonempty.iter().map(|l| l.split_whitespace().collect()).collect();
-    let token_count = token_lists[0].len();
-    let same_count = token_lists.iter().all(|t| t.len() == token_count);
-    if same_count {
-        let mut varying: Vec<usize> = Vec::new();
-        for i in 0..token_count {
-            let first = token_lists[0][i];
-            if !token_lists.iter().all(|t| t[i] == first) {
-                varying.push(i);
-            }
-        }
-        if varying.len() == 1 {
-            let pos = varying[0];
-            let nums: Vec<i32> = token_lists
-                .iter()
-                .filter_map(|t| t[pos].parse::<i32>().ok())
-                .collect();
-            if nums.len() == token_lists.len() {
-                let lo = *nums.iter().min().unwrap();
-                let hi = *nums.iter().max().unwrap();
-                let range = if lo == hi {
-                    lo.to_string()
-                } else {
-                    format!("{lo}-{hi}")
-                };
-                let mut tokens: Vec<String> =
-                    token_lists[0].iter().map(|s| (*s).to_string()).collect();
-                tokens[pos] = range;
-                return tokens.join(" ");
+fn collect_cargo_tags_from_ship_group(
+    group: &SlotGroup<ShipSlot>,
+    tree: &TagTree,
+    out: &mut Vec<String>,
+) {
+    for opt in &group.options {
+        for t in cargo_tags_from_bag(&opt.positive, tree) {
+            if !out.contains(&t) {
+                out.push(t);
             }
         }
     }
-    nonempty.join(", ")
 }
 
-/// Collapse fully-identical lines into one with a `(×N)` count
-/// suffix. Operates on the post-merge lines so that
-/// `Wave 1-3` + `Wave 1-3` still dedups.
-fn dedup_with_count(slots: Vec<SlotLine>) -> Vec<SlotLine> {
-    let mut out: Vec<SlotLine> = Vec::new();
-    for slot in slots {
-        let target = out.iter_mut().find(|other| {
-            other.encounter_label == slot.encounter_label
-                && other.phase_label == slot.phase_label
-                && other.concurrent == slot.concurrent
-                && other.body == slot.body
-                && other.tags == slot.tags
-                && other.skills == slot.skills
-                && other.ace == slot.ace
-                && other.role_hint == slot.role_hint
-                && other.source_slot_count == slot.source_slot_count
-                && other.all_singleton_sources == slot.all_singleton_sources
-        });
-        match target {
-            Some(t) => t.count += 1,
-            None => out.push(slot),
-        }
-    }
-    out
-}
-
-// ── Rendering ──────────────────────────────────────────────────────────────
-
-/// Render one collapsed slot to one or more output lines.
-fn render_slot(slot: &SlotLine) -> Vec<String> {
-    // Skill (and Ace, when not at skill 100) lead the body — moves
-    // the most uniform piece of info to a predictable position.
-    // Tags are NOT rendered per-slot; they aggregate into a single
-    // summary line at the end of the encounters block.
-    let skill_lead = render_skill_lead(slot);
-    let trailing = render_trailing(slot);
-
-    match &slot.body {
-        BodyKind::Ships(names) => render_ship_lines(slot, names, &skill_lead, &trailing),
-        BodyKind::RoleOnly(role) => {
-            let body = format!("{skill_lead}{role}");
-            vec![format_inline_line(&label_with_phase(slot), &body, &trailing)]
-        }
-        BodyKind::Entities(amount) => {
-            let amount_str = if *amount > 1 {
-                format!("{amount}x entities")
-            } else {
-                "entity".to_string()
-            };
-            let body = format!("{skill_lead}{amount_str}");
-            vec![format_inline_line(&label_with_phase(slot), &body, &trailing)]
+fn collect_cargo_tags_from_entity_group(
+    group: &SlotGroup<EntitySlot>,
+    tree: &TagTree,
+    out: &mut Vec<String>,
+) {
+    for opt in &group.options {
+        for t in cargo_tags_from_bag(&opt.positive, tree) {
+            if !out.contains(&t) {
+                out.push(t);
+            }
         }
     }
 }
 
-/// Render a ships body across one or two lines.
-///
-/// - **Inline** when the slot is the simplest case (single ship, no
-///   merge, concurrent of 1): `Encounter [Phase]: {skill} ship`.
-/// - **Multi-line** otherwise: header line `Encounter [Phase]:`,
-///   indented body with `{skill} {N}x: ships` or `{skill} One of: ships`
-///   when the merge folded multiple single-ship single-concurrent
-///   sources into alternatives.
-fn render_ship_lines(
-    slot: &SlotLine,
-    names: &[String],
-    skill_lead: &str,
-    trailing: &str,
-) -> Vec<String> {
-    let label = label_with_phase(slot);
+// ── Tag summary aggregation ────────────────────────────────────────────────
 
-    // Trivial case — drop straight inline.
-    if names.len() == 1 && slot.source_slot_count == 1 && slot.concurrent == 1 {
-        let body = format!("{skill_lead}{}", names[0]);
-        return vec![format_inline_line(&label, &body, trailing)];
-    }
-
-    let prefix = if names.len() > 1
-        && slot.source_slot_count > 1
-        && slot.all_singleton_sources
-    {
-        // Several source slots, each contributing a single ship at
-        // concurrent=1 — engine picks one of the alternatives.
-        "One of: ".to_string()
-    } else {
-        format!("{}x: ", slot.concurrent)
-    };
-
-    vec![
-        format!("{label}:"),
-        format!("  {skill_lead}{prefix}{}{trailing}", names.join(", ")),
-    ]
-}
-
-/// Header label + optional `[phase]`.
-/// Header label for one slot — the encounter name plus any
-/// surviving phase qualifier in brackets. Wrapped in
-/// `Color::Underline` so the labels stand out as scan anchors when
-/// the player skims a long encounter list. The trailing colon and
-/// body stay plain.
-fn label_with_phase(slot: &SlotLine) -> String {
-    let raw = if slot.phase_label.is_empty() {
-        slot.encounter_label.clone()
-    } else {
-        format!("{} [{}]", slot.encounter_label, slot.phase_label)
-    };
-    apply_color(Color::Underline, raw)
-}
-
-/// Leading skill / Ace marker for the body. Returns either an empty
-/// string (no skill data, no Ace) or a `"Skill 40 · "` /
-/// `"Skill 40-60 · Ace · "` formatted segment ready to drop in
-/// front of the count + ships.
-///
-/// `Skill 100` implies an Ace pilot, so the redundant `· Ace`
-/// suffix is suppressed when the max skill in the merge is 100.
-fn render_skill_lead(slot: &SlotLine) -> String {
-    let max_skill = slot.skills.iter().copied().max();
-    let suppress_ace = max_skill == Some(100);
-    let ace_to_show = slot.ace && !suppress_ace;
-    match format_skill(&slot.skills, ace_to_show) {
-        Some(s) => format!("{s} · "),
-        None => String::new(),
-    }
-}
-
-/// Trailing metadata: ` · (role hint)` plus `(×N)` multiplicity.
-fn render_trailing(slot: &SlotLine) -> String {
-    let mut s = String::new();
-    if let Some(hint) = slot.role_hint {
-        s.push_str(&format!(" · ({hint})"));
-    }
-    if slot.count > 1 {
-        s.push_str(&format!(" (×{})", slot.count));
-    }
-    s
-}
-
-fn format_skill(skills: &[u32], ace: bool) -> Option<String> {
-    if skills.is_empty() {
-        return if ace { Some("Ace".to_string()) } else { None };
-    }
-    let mut sorted: Vec<u32> = skills.to_vec();
-    sorted.sort_unstable();
-    sorted.dedup();
-    let label = if sorted.len() == 1 {
-        format!("Skill {}", sorted[0])
-    } else {
-        format!("Skill {}-{}", sorted.first().unwrap(), sorted.last().unwrap())
-    };
-    if ace {
-        Some(format!("{label} · Ace"))
-    } else {
-        Some(label)
-    }
-}
-
-fn format_inline_line(label: &str, body: &str, meta: &str) -> String {
-    format!("{label}: {body}{meta}")
-}
-
-// ── Tag summary aggregation ───────────────────────────────────────────────
-
-/// Aggregate distinct tags across every collapsed slot and render
-/// them as a single summary line categorised by what the player
-/// cares about. Returns `None` when no tags survive filtering.
-///
-/// Buckets:
-/// - **Cargo** — anything ending in `Cargo` (`Scraps Cargo`,
-///   `Half Cargo`, `Full Cargo`, …)
-/// - **Value** — `HighValue` / `MediumValue` / `LowValue` / `Mixed`
-/// - **Tags** — everything else (`Bounty`, `Salvage`, faction
-///   markers, etc.)
-///
-/// `General` is dropped as pure noise — it appears on nearly every
-/// slot and tells the player nothing.
-fn aggregate_tag_summary(slots: &[SlotLine]) -> Option<String> {
+/// Aggregate distinct tags across every group and render them as a
+/// single summary line categorised by what the player cares about.
+/// Returns `None` when no tags survive filtering.
+fn aggregate_tag_summary(all_tags: &[String]) -> Option<String> {
     let mut amounts: Vec<String> = Vec::new();
     let mut values: Vec<String> = Vec::new();
     let mut other: Vec<String> = Vec::new();
 
-    for slot in slots {
-        for t in &slot.tags {
-            if is_noise_tag(t) {
-                continue;
-            }
-            let bucket: &mut Vec<String> = if is_cargo_amount(t) {
-                &mut amounts
-            } else if is_value_tier(t) {
-                &mut values
-            } else {
-                &mut other
-            };
-            if !bucket.contains(t) {
-                bucket.push(t.clone());
-            }
+    for t in all_tags {
+        if is_noise_tag(t) {
+            continue;
+        }
+        let bucket: &mut Vec<String> = if is_cargo_amount(t) {
+            &mut amounts
+        } else if is_value_tier(t) {
+            &mut values
+        } else {
+            &mut other
+        };
+        if !bucket.contains(t) {
+            bucket.push(t.clone());
         }
     }
 
@@ -952,14 +883,34 @@ fn is_value_tier(t: &str) -> bool {
     matches!(t, "HighValue" | "MediumValue" | "LowValue" | "Mixed")
 }
 
-// ── NPC counting (unchanged) ──────────────────────────────────────────────
+// ── NPC counting ───────────────────────────────────────────────────────────
 
 fn count_npcs(encounter: &NpcEncounter) -> i32 {
     let mut total = 0;
     for phase in &encounter.phases {
         match parse_count_from_phase_name(&phase.name) {
             Some(n) => total += n,
-            None => total += phase.slots.len() as i32,
+            None => total += phase.option_count() as i32,
+        }
+    }
+    total
+}
+
+/// Same shape as [`count_npcs`] but only sums slots NOT marked as
+/// `mission_allied_marker`. A phase whose every slot is allied is
+/// dropped from the count entirely; mixed phases (rare) count as
+/// enemy because the worst case for the player is enemies present.
+fn count_enemy_npcs(encounter: &NpcEncounter) -> i32 {
+    let mut total = 0;
+    for phase in &encounter.phases {
+        let all_friendly = phase.option_count() > 0
+            && phase.all_options().all(|s| s.mission_allied_marker);
+        if all_friendly {
+            continue;
+        }
+        match parse_count_from_phase_name(&phase.name) {
+            Some(n) => total += n,
+            None => total += phase.option_count() as i32,
         }
     }
     total
@@ -1030,30 +981,19 @@ mod tests {
 
     #[test]
     fn encounter_label_strips_filler_suffixes() {
-        assert_eq!(
-            clean_encounter_label("HostileShipSpawnDescriptions"),
-            "Hostile"
-        );
-        assert_eq!(
-            clean_encounter_label("AlliedSpawnDescriptions"),
-            "Allied"
-        );
+        assert_eq!(clean_encounter_label("HostileShipSpawnDescriptions"), "Hostile");
+        assert_eq!(clean_encounter_label("AlliedSpawnDescriptions"), "Allied");
         assert_eq!(
             clean_encounter_label("DropoffLocation1ShipsToSpawn"),
             "Dropoff Location 1"
         );
-        // No filler suffix — pretty_identifier-only.
         assert_eq!(clean_encounter_label("MissionTargets"), "Mission Targets");
     }
 
     #[test]
     fn phase_label_drops_when_matching_encounter() {
         assert_eq!(clean_phase_label("InitialEnemies", "Initial Enemies"), "");
-        assert_eq!(
-            clean_phase_label("EscortShip", "Escort Ship"),
-            ""
-        );
-        // Genuine phase qualifier — kept.
+        assert_eq!(clean_phase_label("EscortShip", "Escort Ship"), "");
         assert_eq!(clean_phase_label("Wave1", "Mission Targets"), "Wave 1");
         assert_eq!(
             clean_phase_label("Reinforcements", "Mission Targets"),
@@ -1062,67 +1002,10 @@ mod tests {
     }
 
     #[test]
-    fn merges_phase_labels_with_numeric_range() {
-        assert_eq!(
-            merge_phase_labels(&[
-                "Wave 1".to_string(),
-                "Wave 2".to_string(),
-                "Wave 3".to_string()
-            ]),
-            "Wave 1-3"
-        );
-        assert_eq!(
-            merge_phase_labels(&[
-                "Drop Off 1 Enemy Ships".to_string(),
-                "Drop Off 2 Enemy Ships".to_string(),
-                "Drop Off 3 Enemy Ships".to_string()
-            ]),
-            "Drop Off 1-3 Enemy Ships"
-        );
-    }
-
-    #[test]
-    fn merges_phase_labels_falls_back_to_comma_list() {
-        // Different token count → fallback.
-        assert_eq!(
-            merge_phase_labels(&[
-                "Wave 1".to_string(),
-                "Initial Wave".to_string()
-            ]),
-            "Wave 1, Initial Wave"
-        );
-        // Same shape but non-numeric varying token → fallback.
-        assert_eq!(
-            merge_phase_labels(&["Wave A".to_string(), "Wave B".to_string()]),
-            "Wave A, Wave B"
-        );
-    }
-
-    #[test]
-    fn merge_phase_labels_passes_through_single() {
-        assert_eq!(
-            merge_phase_labels(&["Wave 1".to_string()]),
-            "Wave 1"
-        );
-        assert_eq!(merge_phase_labels(&[]), "");
-    }
-
-    #[test]
-    fn format_skill_renders_range() {
-        assert_eq!(format_skill(&[40], false).unwrap(), "Skill 40");
-        assert_eq!(format_skill(&[40, 60], false).unwrap(), "Skill 40-60");
-        assert_eq!(format_skill(&[40, 60, 50], false).unwrap(), "Skill 40-60");
-        assert_eq!(format_skill(&[40], true).unwrap(), "Skill 40 · Ace");
-        assert_eq!(format_skill(&[], true).unwrap(), "Ace");
-        assert!(format_skill(&[], false).is_none());
-    }
-
-    #[test]
     fn strip_manufacturer_handles_match_and_passthrough() {
         let prefixes = vec!["Aegis ".to_string(), "Drake ".to_string()];
         assert_eq!(strip_manufacturer(&prefixes, "Aegis Avenger"), "Avenger");
         assert_eq!(strip_manufacturer(&prefixes, "Drake Cutlass"), "Cutlass");
-        // No prefix match — input passes through unchanged.
         assert_eq!(strip_manufacturer(&prefixes, "300i"), "300i");
     }
 
@@ -1140,47 +1023,27 @@ mod tests {
             clean_encounter_label("EscortShipFromLandingAreaEscortReinforcementsWave01"),
             "Escort Reinforcements Wave 01"
         );
-        assert_eq!(
-            clean_encounter_label("SupportAttackedShipHostile"),
-            "Hostile"
-        );
+        assert_eq!(clean_encounter_label("SupportAttackedShipHostile"), "Hostile");
         assert_eq!(
             clean_encounter_label("SearchAndDestroyReinforcements"),
             "Reinforcements"
         );
-        assert_eq!(
-            clean_encounter_label("KillShipMissionTargets"),
-            "Mission Targets"
-        );
-        // No wrapper — unchanged.
+        assert_eq!(clean_encounter_label("KillShipMissionTargets"), "Mission Targets");
         assert_eq!(clean_encounter_label("MissionTargets"), "Mission Targets");
     }
 
     #[test]
-    fn encounter_label_strips_wrapper_and_filler_together() {
-        // Both passes must run — wrapper prefix AND filler suffix on
-        // the same label.
-        assert_eq!(
-            clean_encounter_label("DropoffLocation1ShipsToSpawn"),
-            "Dropoff Location 1"
-        );
-    }
-
-    #[test]
     fn phase_drop_handles_extension_pattern() {
-        // Phase = encounter + " Ship" → drop.
         assert_eq!(clean_phase_label("AcePilotShip", "Ace Pilot"), "");
-        // Encounter = phase + " Defenders" → drop.
-        assert_eq!(clean_phase_label("MissionTargets", "Mission Targets Defenders"), "");
-        // Independent phase — kept.
+        assert_eq!(
+            clean_phase_label("MissionTargets", "Mission Targets Defenders"),
+            ""
+        );
         assert_eq!(clean_phase_label("Wave1", "Mission Targets"), "Wave 1");
     }
 
     #[test]
     fn resolve_labels_swaps_when_phase_is_more_specific() {
-        // Wave Ships [Wave 1] — phase has the encounter's "Wave"
-        // token plus a number; the encounter is generic boilerplate
-        // next to the specific phase. Use phase as label.
         assert_eq!(
             resolve_labels("Wave Ships", "Wave 1"),
             ("Wave 1".to_string(), String::new())
@@ -1213,16 +1076,9 @@ mod tests {
 
     #[test]
     fn phase_drop_handles_singular_plural_stem() {
-        // Phase token is the singular form of an encounter token.
         assert_eq!(clean_phase_label("Target", "Mission Targets"), "");
-        // Plural phase, singular encounter — symmetric.
         assert_eq!(clean_phase_label("Targets", "Mission Target"), "");
-        // Multi-token phase: every token must stem-match.
-        assert_eq!(
-            clean_phase_label("MissionTarget", "Mission Targets"),
-            ""
-        );
-        // Mixed match — one token doesn't stem to anything in encounter.
+        assert_eq!(clean_phase_label("MissionTarget", "Mission Targets"), "");
         assert_eq!(
             clean_phase_label("Defenders", "Mission Targets"),
             "Defenders"
@@ -1231,21 +1087,15 @@ mod tests {
 
     #[test]
     fn phase_drop_handles_cross_inflection() {
-        // -ed vs -ies — both inflect from the same root, drop phase.
         assert_eq!(clean_phase_label("Allies", "Allied"), "");
-        // -y vs -ies — common pattern.
         assert_eq!(clean_phase_label("Enemies", "Enemy"), "");
-        // -er vs -ing — same root, different forms.
         assert_eq!(clean_phase_label("Defending", "Defender"), "");
     }
 
     #[test]
     fn stem_equivalent_rejects_unrelated_short_overlap() {
-        // 3-character common prefix isn't enough.
         assert!(!stem_equivalent("Mission", "Mister"));
-        // Common prefix exists but trailing diff is too large.
         assert!(!stem_equivalent("Allied", "Alliance"));
-        // Unrelated words.
         assert!(!stem_equivalent("Wave", "Hostile"));
     }
 
@@ -1259,132 +1109,18 @@ mod tests {
     }
 
     #[test]
-    fn merge_slots_unions_ships_and_sums_concurrent() {
-        let slot_a = SlotLine {
-            encounter_label: "Scouts".into(),
-            phase_label: "Wave 1".into(),
-            concurrent: 2,
-            body: BodyKind::Ships(vec!["Cutter".into(), "Avenger".into()]),
-            tags: Vec::new(),
-            skills: vec![50],
-            ace: false,
-            role_hint: None,
-            source_slot_count: 1,
-            all_singleton_sources: false,
-            count: 1,
-        };
-        let slot_b = SlotLine {
-            concurrent: 3,
-            skills: vec![40],
-            body: BodyKind::Ships(vec!["Cutter".into(), "Sabre".into()]),
-            ..slot_a.clone()
-        };
-        let merged = merge_slots(vec![slot_a, slot_b]);
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].concurrent, 5);
-        assert_eq!(merged[0].skills, vec![50, 40]);
-        match &merged[0].body {
-            BodyKind::Ships(s) => assert_eq!(s, &["Cutter", "Avenger", "Sabre"]),
-            _ => panic!("expected Ships"),
-        }
-        assert_eq!(merged[0].source_slot_count, 2);
-        assert!(!merged[0].all_singleton_sources);
-    }
-
-    #[test]
-    fn merge_slots_keeps_all_singleton_flag_for_one_of_pattern() {
-        // Three slots, each with one ship and concurrent==1 — the
-        // shape that should render as "One of: ..."
-        let make = |ship: &str| SlotLine {
-            encounter_label: "Target".into(),
-            phase_label: String::new(),
-            concurrent: 1,
-            body: BodyKind::Ships(vec![ship.into()]),
-            tags: vec!["Bounty".into()],
-            skills: vec![60],
-            ace: false,
-            role_hint: None,
-            source_slot_count: 1,
-            all_singleton_sources: true,
-            count: 1,
-        };
-        let merged = merge_slots(vec![make("Freelancer MIS"), make("Cutlass Black"), make("RAFT")]);
-        assert_eq!(merged.len(), 1);
-        assert_eq!(merged[0].source_slot_count, 3);
-        assert!(merged[0].all_singleton_sources);
-        assert_eq!(merged[0].concurrent, 3);
-    }
-
-    #[test]
-    fn skill_lead_suppresses_ace_at_skill_100() {
-        let slot = SlotLine {
-            encounter_label: "Ace Pilot".into(),
-            phase_label: String::new(),
-            concurrent: 1,
-            body: BodyKind::Ships(vec!["F7C Hornet".into()]),
-            tags: vec!["Bounty".into()],
-            skills: vec![100],
-            ace: true,
-            role_hint: None,
-            source_slot_count: 1,
-            all_singleton_sources: false,
-            count: 1,
-        };
-        let lead = render_skill_lead(&slot);
-        assert!(
-            !lead.contains("Ace"),
-            "expected Ace suppressed at skill 100, got {lead}"
-        );
-        assert!(lead.contains("Skill 100"));
-        // Trailing must not carry the skill — that's what moved to the lead.
-        let trailing = render_trailing(&slot);
-        assert!(!trailing.contains("Skill"));
-        assert!(!trailing.contains("Ace"));
-    }
-
-    #[test]
-    fn skill_lead_keeps_ace_at_lower_skill() {
-        let slot = SlotLine {
-            encounter_label: "x".into(),
-            phase_label: String::new(),
-            concurrent: 1,
-            body: BodyKind::Ships(vec!["x".into()]),
-            tags: Vec::new(),
-            skills: vec![80],
-            ace: true,
-            role_hint: None,
-            source_slot_count: 1,
-            all_singleton_sources: false,
-            count: 1,
-        };
-        let lead = render_skill_lead(&slot);
-        assert!(lead.contains("Skill 80"));
-        assert!(lead.contains("Ace"));
-    }
-
-    #[test]
     fn aggregate_tag_summary_categorises_buckets() {
-        let make = |tags: Vec<&str>| SlotLine {
-            encounter_label: "x".into(),
-            phase_label: String::new(),
-            concurrent: 1,
-            body: BodyKind::Ships(vec!["x".into()]),
-            tags: tags.into_iter().map(String::from).collect(),
-            skills: Vec::new(),
-            ace: false,
-            role_hint: None,
-            source_slot_count: 1,
-            all_singleton_sources: false,
-            count: 1,
-        };
-        let slots = vec![
-            make(vec!["Scraps Cargo", "LowValue", "General", "Bounty"]),
-            make(vec!["Half Cargo", "Mixed", "Legal"]),
+        let tags = vec![
+            "Scraps Cargo".to_string(),
+            "LowValue".to_string(),
+            "General".to_string(),
+            "Bounty".to_string(),
+            "Half Cargo".to_string(),
+            "Mixed".to_string(),
+            "Legal".to_string(),
         ];
-        let summary = aggregate_tag_summary(&slots).expect("non-empty");
-        // General is dropped.
+        let summary = aggregate_tag_summary(&tags).expect("non-empty");
         assert!(!summary.contains("General"));
-        // All categories present and labelled.
         assert!(summary.contains("Cargo: Scraps Cargo, Half Cargo"));
         assert!(summary.contains("Value: LowValue, Mixed"));
         assert!(summary.contains("Tags: Bounty, Legal"));
@@ -1392,34 +1128,22 @@ mod tests {
 
     #[test]
     fn friendly_label_classifies_typical_cases() {
-        // Friendly markers in the encounter label.
         assert!(is_friendly_label("Allied"));
         assert!(is_friendly_label("Allied Reinforcements"));
         assert!(is_friendly_label("Escort Ship"));
         assert!(is_friendly_label("Friendly NPCs"));
         assert!(is_friendly_label("Attacked"));
-        // Non-friendly defaults.
         assert!(!is_friendly_label("Mission Targets"));
         assert!(!is_friendly_label("Initial Enemies"));
         assert!(!is_friendly_label("Hostile"));
         assert!(!is_friendly_label("Enemy Ships"));
-        // "Defend Location" alone shouldn't classify as friendly —
-        // it's the wrapper for an enemy fight at a location.
         assert!(!is_friendly_label("Defend Location"));
     }
 
     #[test]
     fn phase_strip_unblocks_supersede_for_wrapper_phase() {
-        // The bug we're fixing — phase carrying the wrapper text used
-        // to leak back when it superseded the encounter. Now the
-        // wrapper strips on phase too, so the supersede surfaces a
-        // clean "Enemy Ships" label.
         let raw_encounter = clean_encounter_label("EnemyShips");
-        let raw_phase = clean_phase_label(
-            "DefendLocationWrapperEnemyShips",
-            &raw_encounter,
-        );
-        // Phase folds to encounter (now equal) and gets dropped.
+        let raw_phase = clean_phase_label("DefendLocationWrapperEnemyShips", &raw_encounter);
         assert_eq!(raw_phase, "");
         let (label_e, label_p) = resolve_labels(&raw_encounter, &raw_phase);
         assert_eq!(label_e, "Enemy Ships");
@@ -1428,19 +1152,47 @@ mod tests {
 
     #[test]
     fn aggregate_tag_summary_returns_none_when_only_noise() {
-        let slots = vec![SlotLine {
-            encounter_label: "x".into(),
-            phase_label: String::new(),
-            concurrent: 1,
-            body: BodyKind::Ships(vec!["x".into()]),
-            tags: vec!["General".into()],
-            skills: Vec::new(),
-            ace: false,
-            role_hint: None,
-            source_slot_count: 1,
-            all_singleton_sources: false,
-            count: 1,
-        }];
-        assert!(aggregate_tag_summary(&slots).is_none());
+        let tags = vec!["General".to_string()];
+        assert!(aggregate_tag_summary(&tags).is_none());
+    }
+
+    #[test]
+    fn compose_count_renders_nx_form() {
+        assert_eq!(compose_count_and_pool(1, 1, &[]), "1x");
+        assert_eq!(compose_count_and_pool(3, 3, &[]), "3x");
+        assert_eq!(compose_count_and_pool(1, 3, &[]), "1-3x");
+        assert_eq!(
+            compose_count_and_pool(2, 2, &["Cutlass".to_string(), "Sabre".to_string()]),
+            "2x Cutlass, Sabre"
+        );
+        assert_eq!(
+            compose_count_and_pool(1, 3, &["Scythe".to_string()]),
+            "1-3x Scythe"
+        );
+    }
+
+    #[test]
+    fn broad_ship_class_filter() {
+        // Broad class names suppressed (already in the ship pool).
+        assert!(is_broad_ship_class_tag("CombatShip"));
+        assert!(is_broad_ship_class_tag("LargeCombatShip"));
+        assert!(is_broad_ship_class_tag("HeavyInterceptor"));
+        assert!(is_broad_ship_class_tag("MediumInterceptor"));
+        // Loadout markers under the same DCB subtree survive.
+        assert!(!is_broad_ship_class_tag("Distortion"));
+        assert!(!is_broad_ship_class_tag("Stealth"));
+        // Genuine hull names also survive (we don't classify them as
+        // ShipClass in the first place, but be defensive).
+        assert!(!is_broad_ship_class_tag("Scythe"));
+    }
+
+    #[test]
+    fn format_axis_value_phrasing() {
+        // Effect → "with X"
+        assert_eq!(format_axis_value(AxisKind::Effect, "Distortion"), "with Distortion");
+        // Hull / ShipClass / CombatClass → bare
+        assert_eq!(format_axis_value(AxisKind::Hull, "Scythe"), "Scythe");
+        assert_eq!(format_axis_value(AxisKind::ShipClass, "CombatShip"), "CombatShip");
+        assert_eq!(format_axis_value(AxisKind::CombatClass, "Hard"), "Hard");
     }
 }

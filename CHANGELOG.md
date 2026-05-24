@@ -7,6 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Mission encounters no longer over-count ship spawns.** Previously
+  the encounter renderer collapsed weighted alternatives (engine
+  picks one of N options inside a `ShipOptions` slot) into a flat
+  slot list and summed their concurrent counts, producing displays
+  like "Skill 10-30 · 6x Scythe" for a mission that actually spawns
+  1-3 Scythes. ~14% of ship-spawn properties in the DCB had this
+  pattern. Fixed by consuming sc-holotable v0.4.0's new `SlotGroup`
+  API, which preserves the alternatives boundary, and rewriting the
+  renderer to display each group honestly:
+  - Singleton groups render as before: `Label: 3 ships · <pool>`
+  - Pure scaling variance (only `HumanPilotNN` differs across
+    alternatives) collapses to a range: `Label: 1-3 ships · <pool>`
+  - Surface variance (Distortion, faction, ship class, hull,
+    `ArriveViaQT`, cargo, value, or CombatClass tier) renders
+    explicit alternatives:
+    ```
+    Mission Targets: One of:
+      3 ships · Scorpius, Vanguard Warden (Distortion)
+      4 ships · Guardian MX, Hurricane, Scorpius, …
+    ```
+  - Weighted alternatives (5:1 etc.) show percentages.
+  - When a phase has multiple concurrent groups (squad-A + squad-B
+    + squad-C that all fire), the encounter label appears once as
+    a header followed by bullet-prefixed group bodies, replacing
+    the previous three-identical-labels-stacked layout.
+  - Per-line annotations kept lean: `HumanPilotNN` (pilot skill)
+    and broad ship-class names (CombatShip, LargeCombatShip,
+    *Interceptor) are dropped — the resolved ship pool already
+    conveys ship class, and pilot-skill noise can fill 30% of a
+    line on dense waves. Genuinely orthogonal axes (Distortion,
+    ArriveViaQT, faction overrides, mid-alternative cargo / value
+    swings) still surface in the per-option `(…)` suffix. The
+    `Missions/VehicleType/Ship/*` subtree is filtered by name to
+    keep loadout markers (Distortion) while suppressing class
+    labels (CombatShip).
+  - Body counts use the terse `Nx` form (`3x Cutlass`, `1-3x
+    Scythe`) instead of `3 ships · Cutlass`. Section header
+    still reads `Encounters · 2-4 ships` for context.
+  - Every phase label sits on its own line with a 2-space
+    indented body; multi-group phases stack their bodies under
+    the same header (no more `· ` bullets — indent alone carries
+    the hierarchy). `One of:` blocks nest one level further.
+- **Encounter heading widened.** Now reads `Encounters · 2-4 ships ·
+  Easy-Medium` (ship range + CombatClass range banner). When every
+  alternative shares one tier the range collapses to a single
+  label (`· VeryEasy`); when alternatives span multiple tiers the
+  range surfaces them (`· VeryEasy-Hard`). Banner omitted entirely
+  when no encounter carries a recognised CombatClass tag. The range
+  is computed via a new `encounters::combat_class_range` helper that
+  walks `SlotGroup.shared_tags` + `axes.combat_class.per_option`.
+
+### Changed
+- **Bumped sc-holotable dep** from `datacore/4.8.0-live.11825000` to
+  `sc-holotable/v0.4.0`. Same SC 4.8.0 bindings, plus the new
+  `SlotGroup` + `AxisDiff` API. Migrates `phase.slots.iter()`
+  accesses to `phase.all_options()` / `phase.groups`.
+
 ## [0.4.2] - 2026-05-15
 
 ### Fixed

@@ -46,7 +46,7 @@ pub fn classify(db: &DataCoreDatabase, mission: &Mission) -> CrimestatRisk {
         Encounter::Npcs(npc) => npc
             .phases
             .iter()
-            .flat_map(|p| p.slots.iter())
+            .flat_map(|p| p.all_options())
             .any(|slot| slot.mission_allied_marker),
         _ => false,
     });

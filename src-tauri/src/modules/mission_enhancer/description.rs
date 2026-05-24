@@ -396,20 +396,44 @@ fn encounter_block(
         return None;
     }
     let heading = format_encounter_heading(
-        rendering.enemy_ship_total,
+        rendering.enemy_ship_count_range,
         rendering.enemy_npc_total,
+        encounters::combat_class_range(&mission.encounters).as_deref(),
     );
     Some(format!("{}{NEWLINE}{}", header(heading), rendering.body))
 }
 
-/// Build the `Encounters` section header, optionally augmented with
-/// enemy-side spawn totals: `Encounters · 20x Ships · 10x NPC`.
-/// Friendly slots (escort ships, allied NPCs) are excluded from
-/// these counts upstream — see `encounters::render`.
-fn format_encounter_heading(ship_total: i32, npc_total: i32) -> String {
+/// Build the `Encounters` section header, augmented with the enemy-side
+/// spawn range and (when unambiguous) the mission's CombatClass tier:
+///
+/// ```text
+/// Encounters · 2-4 ships · VeryEasy
+/// Encounters · 5 ships
+/// Encounters · 3-4 ships · Hard · 10x NPC
+/// ```
+///
+/// Range comes from per-group `concurrent_range` summed across all
+/// enemy ship/entity groups — see `encounters::render`. CombatClass
+/// comes from `Mission::combat_class()`; `None` when the alternatives
+/// span multiple tiers or carry no CombatClass tag, in which case the
+/// suffix is omitted. NPC count tails after the tier.
+fn format_encounter_heading(
+    ship_range: (i32, i32),
+    npc_total: i32,
+    combat_class: Option<&str>,
+) -> String {
+    let (lo, hi) = ship_range;
     let mut parts: Vec<String> = vec!["Encounters".to_string()];
-    if ship_total > 0 {
-        parts.push(format!("{ship_total}x Ships"));
+    if hi > 0 {
+        let count = if lo == hi {
+            format!("{lo} ship{}", if lo == 1 { "" } else { "s" })
+        } else {
+            format!("{lo}-{hi} ships")
+        };
+        parts.push(count);
+    }
+    if let Some(cc) = combat_class {
+        parts.push(cc.to_string());
     }
     if npc_total > 0 {
         parts.push(format!("{npc_total}x NPC"));
@@ -799,8 +823,9 @@ fn variant_diff_lines(
             // The body already uses NEWLINE between lines — expand them
             // into our two-space indent.
             let heading = format_encounter_heading(
-                rendering.enemy_ship_total,
+                rendering.enemy_ship_count_range,
                 rendering.enemy_npc_total,
+                encounters::combat_class_range(&mission.encounters).as_deref(),
             );
             let indent = format!("{NEWLINE}  ");
             let body = rendering.body.replace(NEWLINE, &indent);
