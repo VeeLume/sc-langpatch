@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Locale entries with CIG `,P` metadata suffix now resolve.** SC 4.8
+  LIVE's `global.ini` ships ~12,873 entries with a `,P` suffix on the
+  key (e.g. `item_Nameutfl_crossbow_ballistic_01_tint01,P=Novian
+  "Nighthunter" Crossbow`). DCB references — and the mission /
+  description / item-name lookups the patcher does — use the bare
+  form, so every affected entry silently returned no match. Symptom:
+  items missing from "Potential Blueprints" lists, mission
+  descriptions getting no enrichment when their key carried the
+  suffix. Fixed by stripping `,P` (and any other comma-delimited
+  marker) at every locale-construction point: sc-extract's
+  `LocaleMap` parse/set paths, sc-langpatch's `parse_ini` helper,
+  and the three raw-INI line iterators in `merge.rs`
+  (`apply_patches`, `apply_language_pack`, `apply_renames`). Patched
+  lines preserve the original `,P` suffix on write so the game's
+  parser stays happy.
+- **Missions with multiple blueprint pools now render all pools.**
+  sc-contracts v0.5.0 widens `MissionRewards.blueprint` from `Option`
+  to `Vec`; the Mission Enhancer description renderer now loops over
+  the new vec and emits one "Potential Blueprints" block per pool
+  with its own chance line. Previously only the first pool reached
+  the player (e.g. the `Tactical Strike Group Needed` mission showed
+  just one of its two pools).
+- **Patches no longer stack on `LOC_UNINITIALIZED` /
+  `LOC_PLACEHOLDER` sentinel lines.** CIG ships those lines as
+  unresolved-key fallback targets; many missions resolve their
+  title/description key to one of them, so the patcher's append-style
+  enrichment piled every affected mission's blueprint list onto the
+  same shared line. `apply_patches` now detects `<= UNINITIALIZED =>`
+  and `<= PLACEHOLDER =>` values (case-insensitive) and skips them,
+  passing the original line through untouched.
+
+### Changed
+- **Blueprint items sort alphabetically.** Mission Enhancer's
+  "Potential Blueprints" list previously rendered in the pool's
+  storage order (descending weight, then GUID — useful for
+  cross-build comparison, noisy in a player-facing help dialog).
+  Sorted case-insensitively by display name now.
+- **Depend on sc-holotable v0.5.0.** New `MissionRewards.blueprints:
+  Vec<BlueprintReward>` shape powers the multi-pool fix above; new
+  `BlueprintPoolRegistry::missions_for_pool` reverse-index lookups
+  are available for future cross-domain queries.
+
 ## [0.4.3] - 2026-05-24
 
 ### Fixed

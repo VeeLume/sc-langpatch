@@ -38,13 +38,16 @@ impl TriState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlueprintState {
-    /// No member has a blueprint reward.
+    /// No member rewards any blueprint pool.
     None,
-    /// All members carry a blueprint reward, all pointing at the same pool.
+    /// Every member rewards the same **set** of pools (multi-pool
+    /// missions match when their pool GUIDs are equal as sets, order
+    /// ignored).
     AllSamePool,
-    /// All members carry a blueprint reward, but pool guids differ.
+    /// Every member rewards at least one pool, but the sets differ
+    /// across members.
     AllDifferentPools,
-    /// Some members carry a blueprint reward and others don't.
+    /// Some members reward blueprints and others don't.
     MixedPresence,
 }
 
@@ -153,22 +156,22 @@ fn classify_blueprints(members: &[&Mission]) -> BlueprintState {
     if members.is_empty() {
         return BlueprintState::None;
     }
-    let mut with: Vec<Guid> = Vec::new();
-    let mut without = 0usize;
-    for m in members {
-        match &m.rewards.blueprint {
-            Some(bp) => with.push(bp.pool_guid),
-            None => without += 1,
-        }
-    }
-    if with.is_empty() {
+    // Each member's pool identity is the *set* of pool GUIDs it
+    // rewards. Multi-pool missions where one member has {X, Y} and
+    // another has {X, Z} count as different sets.
+    let sets: Vec<HashSet<Guid>> = members
+        .iter()
+        .map(|m| m.rewards.blueprints.iter().map(|r| r.pool_guid).collect())
+        .collect();
+    let with_count = sets.iter().filter(|s| !s.is_empty()).count();
+    if with_count == 0 {
         return BlueprintState::None;
     }
-    if without > 0 {
+    if with_count < sets.len() {
         return BlueprintState::MixedPresence;
     }
-    let unique: HashSet<&Guid> = with.iter().collect();
-    if unique.len() == 1 {
+    // All members have at least one pool — set equality across all of them.
+    if sets.windows(2).all(|w| w[0] == w[1]) {
         BlueprintState::AllSamePool
     } else {
         BlueprintState::AllDifferentPools

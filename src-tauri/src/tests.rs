@@ -149,6 +149,80 @@ mod patch_application {
         assert!(patched.contains("# comment"));
         assert!(patched.contains("; another comment"));
     }
+
+    #[test]
+    fn skips_uninitialized_placeholder_value() {
+        // CIG ships `LOC_UNINITIALIZED=<= UNINITIALIZED =>` as the
+        // fallback target for unresolved localization keys. Multiple
+        // missions point at it, so any patch we apply stacks every
+        // mission's enrichment on the same line. Skip the patch
+        // entirely; pass the line through untouched.
+        let ini = "LOC_UNINITIALIZED=<= UNINITIALIZED =>\nother=Untouched\n";
+        let patched = apply(
+            ini,
+            &[(
+                "LOC_UNINITIALIZED",
+                PatchOp::Suffix("\\n\\n<EM4>Blueprints</EM4>...".into()),
+            )],
+        );
+        assert_ini_unchanged(&patched, "LOC_UNINITIALIZED", "<= UNINITIALIZED =>");
+        assert_ini_unchanged(&patched, "other", "Untouched");
+    }
+
+    #[test]
+    fn skips_placeholder_sentinel_value() {
+        // Same logic for `LOC_PLACEHOLDER=S1 ???0A <= PLACEHOLDER =>`.
+        let ini = "LOC_PLACEHOLDER=S1 ???0A <= PLACEHOLDER =>\n";
+        let patched = apply(
+            ini,
+            &[(
+                "LOC_PLACEHOLDER",
+                PatchOp::Replace("Should not land".into()),
+            )],
+        );
+        assert_ini_unchanged(&patched, "LOC_PLACEHOLDER", "S1 ???0A <= PLACEHOLDER =>");
+    }
+
+    #[test]
+    fn placeholder_skip_is_case_insensitive() {
+        let ini = "weird_caps=<= placeholder =>\n";
+        let patched = apply(
+            ini,
+            &[("weird_caps", PatchOp::Suffix(" tail".into()))],
+        );
+        assert_ini_unchanged(&patched, "weird_caps", "<= placeholder =>");
+    }
+
+    #[test]
+    fn comma_suffixed_key_matches_bare_patch_key() {
+        // CIG ships variant entries with a `,P` metadata suffix on the
+        // INI key, but DCB references — and our patches — use the
+        // bare form. The base line's suffix must round-trip into the
+        // output unchanged.
+        let ini = "item_Nameutfl_crossbow_ballistic_01_tint01,P=Novian \"Nighthunter\" Crossbow\n";
+        let patches: HashMap<String, Vec<PatchOp>> = HashMap::from([(
+            "item_Nameutfl_crossbow_ballistic_01_tint01".to_string(),
+            vec![PatchOp::Suffix(" [BP]".into())],
+        )]);
+        let patched = merge::apply_patches(ini, &patches);
+        assert!(
+            patched.contains("item_Nameutfl_crossbow_ballistic_01_tint01,P=Novian \"Nighthunter\" Crossbow [BP]"),
+            "patched line should preserve the `,P` suffix and append the patch; got:\n{patched}",
+        );
+    }
+
+    #[test]
+    fn placeholder_substring_in_normal_value_still_patches() {
+        // A normal value that happens to mention "PLACEHOLDER" without
+        // the bracket markers must still be patchable — we only skip
+        // the exact CIG sentinel forms.
+        let ini = "note=Use as placeholder until ready\n";
+        let patched = apply(
+            ini,
+            &[("note", PatchOp::Suffix(" [done]".into()))],
+        );
+        assert_ini_value(&patched, "note", "Use as placeholder until ready [done]");
+    }
 }
 
 #[cfg(test)]

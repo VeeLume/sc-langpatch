@@ -8,7 +8,9 @@
 //! - Variants section, all variants share one region → keep `Region` at top, omit from labels.
 //! - Variants section, regions differ → drop `Region` block; region appears as variant label.
 
-use sc_contracts::{BlueprintReward, Cooldowns, Mission, MissionIndex, RewardAmount};
+use sc_contracts::{
+    BlueprintPool, BlueprintReward, Cooldowns, Mission, MissionIndex, RewardAmount,
+};
 use sc_extract::{LocaleMap, LocalizedItemCache, TagTree};
 use svarog_datacore::DataCoreDatabase;
 
@@ -108,10 +110,11 @@ fn push_singleton_blocks(
     manufacturer_prefixes: &[String],
     opts: DescOptions,
 ) {
-    if opts.blueprint_list
-        && let Some(bp) = &head.rewards.blueprint
-    {
-        blocks.push(blueprint_block(bp, cache, locale));
+    if opts.blueprint_list {
+        for bp in &head.rewards.blueprints {
+            let pool = index.blueprints.get(&bp.pool_guid);
+            blocks.push(blueprint_block(bp, pool, cache, locale));
+        }
     }
     if opts.mission_info
         && let Some(info) = mission_info_block(head, &index.currency, cache, locale)
@@ -156,9 +159,14 @@ fn push_variants_blocks(
     // Top section — only the axes that are unanimous across all members.
     if opts.blueprint_list
         && matches!(facts.blueprint_state, BlueprintState::AllSamePool)
-        && let Some(bp) = facts.members.first().and_then(|m| m.rewards.blueprint.as_ref())
+        && let Some(head) = facts.members.first()
     {
-        blocks.push(blueprint_block(bp, cache, locale));
+        // All members reward the same SET of pools — render every pool
+        // from the head member's vec.
+        for bp in &head.rewards.blueprints {
+            let pool = index.blueprints.get(&bp.pool_guid);
+            blocks.push(blueprint_block(bp, pool, cache, locale));
+        }
     }
     if opts.mission_info
         && let Some(info) = unanimous_mission_info_block(facts, &index.currency, cache, locale)
@@ -197,6 +205,7 @@ fn push_variants_blocks(
 
 fn blueprint_block(
     bp: &BlueprintReward,
+    pool: Option<&BlueprintPool>,
     cache: &LocalizedItemCache,
     locale: &LocaleMap,
 ) -> String {
@@ -204,10 +213,24 @@ fn blueprint_block(
     if bp.chance < 1.0 {
         s.push_str(&format!(" ({}% chance)", (bp.chance * 100.0) as i32));
     }
-    for item in &bp.items {
-        let Some(name) = item.display_name(cache, locale) else {
-            continue;
-        };
+    let Some(pool) = pool else {
+        // Unknown pool — emit just the header so the chance line still
+        // surfaces. Should not happen on a clean DCB.
+        return s;
+    };
+    // Resolve display names, then sort alphabetically (case-insensitive)
+    // for player-readable output. Pool's own order is descending weight
+    // — useful for cross-build comparison but noisy in a help dialog.
+    // Items whose display name we can't resolve are dropped; see
+    // [`crate::BlueprintItem::display_name`] for the resolution
+    // sources.
+    let mut names: Vec<&str> = pool
+        .items
+        .iter()
+        .filter_map(|item| item.display_name(cache, locale))
+        .collect();
+    names.sort_by_key(|n| n.to_lowercase());
+    for name in names {
         s.push_str(NEWLINE);
         s.push_str(&bullet(name));
     }
@@ -767,28 +790,34 @@ fn variant_diff_lines(
         BlueprintState::AllDifferentPools | BlueprintState::MixedPresence
     );
     if opts.blueprint_list && blueprint_mixed {
-        match &mission.rewards.blueprint {
-            Some(bp) if !bp.items.is_empty() => {
-                let names: Vec<&str> = bp
+        if mission.rewards.blueprints.is_empty() {
+            lines.push("No blueprint".to_string());
+        } else {
+            for bp in &mission.rewards.blueprints {
+                let Some(pool) = index.blueprints.get(&bp.pool_guid) else {
+                    lines.push("Blueprints: (unknown pool)".to_string());
+                    continue;
+                };
+                let mut names: Vec<&str> = pool
                     .items
                     .iter()
                     .filter_map(|i| i.display_name(cache, locale))
                     .collect();
+                names.sort_by_key(|n| n.to_lowercase());
                 if names.is_empty() {
                     lines.push("Blueprints: (pool empty)".to_string());
+                    continue;
+                }
+                let chance = if bp.chance < 1.0 {
+                    format!(" ({}% chance)", (bp.chance * 100.0) as i32)
                 } else {
-                    let chance = if bp.chance < 1.0 {
-                        format!(" ({}% chance)", (bp.chance * 100.0) as i32)
-                    } else {
-                        String::new()
-                    };
-                    lines.push(format!("Blueprints{chance}:"));
-                    for name in names {
-                        lines.push(bullet(name));
-                    }
+                    String::new()
+                };
+                lines.push(format!("Blueprints{chance}:"));
+                for name in names {
+                    lines.push(bullet(name));
                 }
             }
-            _ => lines.push("No blueprint".to_string()),
         }
     }
 

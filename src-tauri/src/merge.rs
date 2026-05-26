@@ -6,11 +6,18 @@ use anyhow::{Context, Result};
 use crate::module::{KeyRename, PatchOp};
 
 /// Parse global.ini content into a key → value map.
+///
+/// CIG locale-metadata suffixes (e.g. `,P` on variant names) are
+/// stripped from keys via [`sc_extract::strip_locale_metadata`] so the
+/// returned map keys match the bare DCB-reference form. Without this,
+/// downstream consumers (module contexts, the post-overlay LocaleMap)
+/// would silently miss every suffixed entry.
 pub fn parse_ini(content: &str) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for line in content.lines() {
         if let Some(eq_pos) = line.find('=') {
-            let key = line[..eq_pos].to_string();
+            let raw_key = &line[..eq_pos];
+            let key = sc_extract::strip_locale_metadata(raw_key).to_string();
             let value = line[eq_pos + 1..].to_string();
             map.insert(key, value);
         }
@@ -33,10 +40,22 @@ pub fn apply_renames(ini_content: &str, renames: &[KeyRename]) -> String {
 
     for line in ini_content.lines() {
         if let Some(eq_pos) = line.find('=') {
-            let key = &line[..eq_pos];
+            let raw_key = &line[..eq_pos];
+            // Strip the `,P` metadata suffix before matching against
+            // rename targets; preserve it on rewrite by re-appending
+            // the original marker to the new key so the renamed line
+            // keeps its locale-metadata flag.
+            let (key, marker) = match raw_key.split_once(',') {
+                Some((stem, marker)) => (stem, Some(marker)),
+                None => (raw_key, None),
+            };
             if let Some(&new_key) = rename_map.get(key) {
                 let value = &line[eq_pos + 1..];
                 output.push_str(new_key);
+                if let Some(marker) = marker {
+                    output.push(',');
+                    output.push_str(marker);
+                }
                 output.push('=');
                 output.push_str(value);
                 applied += 1;
@@ -83,19 +102,47 @@ fn apply_ops(original: &str, ops: &[PatchOp]) -> String {
 /// key without losing each other's patches.
 pub fn apply_patches(ini_content: &str, patches: &HashMap<String, Vec<PatchOp>>) -> String {
     let mut applied = 0;
+    let mut skipped_placeholder = 0;
     let mut output = String::with_capacity(ini_content.len());
 
     for line in ini_content.lines() {
         if let Some(eq_pos) = line.find('=') {
-            let key = &line[..eq_pos];
+            let raw_key = &line[..eq_pos];
+            // Strip CIG locale-metadata suffix (`,P` etc.) before
+            // matching. DCB references — and the keys our modules
+            // emit patches for — use the bare form, so an INI line
+            // like `item_Descfoo,P=...` would otherwise never be
+            // patched. The original line keeps its suffix on write.
+            let key = match raw_key.split_once(',') {
+                Some((stem, _marker)) => stem,
+                None => raw_key,
+            };
 
             if let Some(ops) = patches.get(key) {
                 let original_value = &line[eq_pos + 1..];
-                let new_value = apply_ops(original_value, ops);
-                output.push_str(key);
-                output.push('=');
-                output.push_str(&new_value);
-                applied += 1;
+                // Skip CIG placeholder/uninitialized sentinels. The
+                // game ships `LOC_PLACEHOLDER` and `LOC_UNINITIALIZED`
+                // entries used as the fallback target for unresolved
+                // localization keys; many missions resolve their
+                // title/description to one of these. Appending blueprint
+                // / mission-info blocks to a shared placeholder line
+                // would stack every mission's annotation onto one entry
+                // — see the giant "Potential Blueprints" pile-up that
+                // surfaces when a single mission's `<EM4>` chain ends
+                // up on `LOC_UNINITIALIZED=<= UNINITIALIZED =>`.
+                if is_placeholder_value(original_value) {
+                    skipped_placeholder += 1;
+                    output.push_str(line);
+                } else {
+                    let new_value = apply_ops(original_value, ops);
+                    // Preserve the original key form (including any
+                    // `,P` metadata suffix) so the patched INI stays
+                    // shape-compatible with the game's parser.
+                    output.push_str(raw_key);
+                    output.push('=');
+                    output.push_str(&new_value);
+                    applied += 1;
+                }
             } else {
                 output.push_str(line);
             }
@@ -106,13 +153,42 @@ pub fn apply_patches(ini_content: &str, patches: &HashMap<String, Vec<PatchOp>>)
     }
 
     eprintln!("  Applied {applied}/{} patches", patches.len());
+    if skipped_placeholder > 0 {
+        eprintln!(
+            "  Skipped {skipped_placeholder} patch(es) targeting CIG placeholder values (LOC_PLACEHOLDER / LOC_UNINITIALIZED)"
+        );
+    }
 
-    if applied < patches.len() {
-        let missing_count = patches.len() - applied;
+    if applied + skipped_placeholder < patches.len() {
+        let missing_count = patches.len() - applied - skipped_placeholder;
         eprintln!("  Warning: {missing_count} patch keys not found in global.ini");
     }
 
     output
+}
+
+/// Detect CIG's unresolved-localization sentinel values.
+///
+/// The game ships two well-known placeholder lines that get used as
+/// the value of any localization key whose real text is missing:
+///
+/// ```text
+/// LOC_PLACEHOLDER=S1 ???0A <= PLACEHOLDER =>
+/// LOC_UNINITIALIZED=<= UNINITIALIZED =>
+/// ```
+///
+/// Many missions point their title/description keys at one of these
+/// when CIG hasn't shipped a translation. Stacking patches (blueprint
+/// list, mission info, etc.) on top of those values produces one giant
+/// annotation pile-up — every affected mission's enrichment lands on
+/// the same shared line.
+///
+/// Skip the patch when the running value carries the `<= PLACEHOLDER =>`
+/// or `<= UNINITIALIZED =>` marker. Matched case-insensitively so any
+/// future capitalisation drift doesn't reopen the bug.
+fn is_placeholder_value(value: &str) -> bool {
+    let upper = value.to_ascii_uppercase();
+    upper.contains("<= PLACEHOLDER =>") || upper.contains("<= UNINITIALIZED =>")
 }
 
 /// Decode global.ini bytes from the p4k (UTF-16 LE) to a String.
@@ -182,12 +258,24 @@ pub fn apply_language_pack(ini_content: &str, pack_content: &str) -> String {
 
     for line in ini_content.lines() {
         if let Some(eq_pos) = line.find('=') {
-            let key = &line[..eq_pos];
+            let raw_key = &line[..eq_pos];
+            // Same `,P` metadata-suffix strip as `apply_patches`.
+            // Community packs are authored against bare DCB key names;
+            // without this, language-pack overrides silently miss
+            // every `,P`-suffixed base entry (Novian variant names,
+            // etc.).
+            let key = match raw_key.split_once(',') {
+                Some((stem, _marker)) => stem,
+                None => raw_key,
+            };
             if let Some(new_value) = overrides.get(key) {
-                output.push_str(key);
+                output.push_str(raw_key);
                 output.push('=');
                 output.push_str(new_value);
                 replaced += 1;
+                // `seen` is checked against override-map keys (bare
+                // form), so insert the stripped form even though we
+                // wrote `raw_key` to the output.
                 seen.insert(key);
             } else {
                 output.push_str(line);
