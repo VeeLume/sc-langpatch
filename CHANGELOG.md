@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-05-26
+
 ### Fixed
 - **Locale entries with CIG `,P` metadata suffix now resolve.** SC 4.8
   LIVE's `global.ini` ships ~12,873 entries with a `,P` suffix on the
