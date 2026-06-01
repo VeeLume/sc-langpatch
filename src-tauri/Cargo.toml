@@ -61,6 +61,11 @@ sc-contracts = { git = "https://github.com/VeeLume/sc-holotable.git", tag = "sc-
 chrono = "0.4.44"
 ureq = { version = "2", default-features = false, features = ["tls"] }
 
+# Hearth's owned-blueprints export contract (mission_enhancer "Owned
+# Blueprints" feature). Serde-only by design — pulls no sc-holotable, so it
+# doesn't clash with the v0.5.0 pin above; guids match as hex strings.
+hearth-export = { path = "../../hearth/crates/hearth-export" }
+
 # Interactive preview TUI dep — used only by `src/bin/preview_tui.rs`.
 # Gated behind the `preview_tui` feature so the Tauri release build
 # doesn't pull it. Build the bin with:

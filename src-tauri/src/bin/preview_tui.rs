@@ -18,7 +18,7 @@ use anyhow::Context as _;
 use sc_extract::Guid;
 use sc_langpatch_lib::formatter_helpers::Color as MarkupColor;
 use sc_langpatch_lib::modules::mission_enhancer::{
-    CrimestatTagMode, DescOptions, TitleOptions,
+    CrimestatTagMode, DescOptions, OwnedMode, TitleOptions,
 };
 use sc_langpatch_lib::preview::{self, PreviewSession};
 use slt::{
@@ -422,6 +422,8 @@ fn default_title_opts() -> TitleOptions {
         once: true,
         illegal: true,
         crimestat: CrimestatTagMode::from_str("colored"),
+        // Preview doesn't load Hearth ownership.
+        owned: false,
     }
 }
 
@@ -432,6 +434,8 @@ fn default_desc_opts() -> DescOptions {
         ship_encounters: true,
         cargo_info: true,
         region_info: true,
+        // Preview doesn't load Hearth ownership.
+        owned_mode: OwnedMode::Off,
         // TUI re-renders ~30 fps — the per-pool fallback eprintln
         // would flood stderr and bleed across the screen on every
         // frame the same pool stays selected.

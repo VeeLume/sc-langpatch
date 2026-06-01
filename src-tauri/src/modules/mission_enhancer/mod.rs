@@ -16,6 +16,7 @@ mod crimestat;
 mod description;
 mod encounters;
 mod format;
+mod owned;
 mod pool;
 mod title;
 mod variants;
@@ -37,6 +38,7 @@ use self::format::build_manufacturer_prefixes;
 // `self::...` paths.
 
 pub use self::description::{render as render_description, DescOptions};
+pub use self::owned::OwnedMode;
 pub use self::pool::PoolFacts;
 pub use self::title::{render as render_title, CrimestatTagMode, TitleOptions};
 
@@ -163,12 +165,48 @@ impl Module for MissionEnhancer {
                 kind: OptionKind::Bool,
                 default: "true".into(),
             },
+            ModuleOption {
+                id: "owned_blueprints".into(),
+                label: "Owned Blueprints".into(),
+                description:
+                    "Use Hearth's owned-blueprints export to mark (✓) or hide blueprints you already own in the description list"
+                        .into(),
+                kind: OptionKind::Choice {
+                    choices: vec![
+                        ChoiceOption { value: "off".into(), label: "Off".into() },
+                        ChoiceOption { value: "mark".into(), label: "Mark owned (✓)".into() },
+                        ChoiceOption { value: "hide".into(), label: "Hide owned".into() },
+                    ],
+                },
+                default: "mark".into(),
+            },
+            ModuleOption {
+                id: "owned_title_tag".into(),
+                label: "Owned-Complete Title Tag".into(),
+                description:
+                    "Add [✓] to titles of missions whose blueprint rewards you already own (per Hearth)"
+                        .into(),
+                kind: OptionKind::Bool,
+                default: "true".into(),
+            },
         ]
     }
 
     fn generate_patches(&self, ctx: &ModuleContext) -> Result<Vec<(String, PatchOp)>> {
         let (Some(datacore), Some(locale), Some(db)) = (ctx.datacore, ctx.locale, ctx.db) else {
             return Ok(Vec::new());
+        };
+
+        let owned_mode = OwnedMode::from_str(
+            ctx.config.get_str("owned_blueprints").unwrap_or("mark"),
+        );
+        let owned_title = ctx.config.get_bool("owned_title_tag").unwrap_or(true);
+        // Load Hearth's owned set once, only if some owned feature is on.
+        // Missing/absent Hearth → empty set → every owned feature is inert.
+        let owned_set = if owned_mode.is_off() && !owned_title {
+            None
+        } else {
+            Some(owned::load_owned_set())
         };
 
         let title_opts = TitleOptions {
@@ -179,6 +217,7 @@ impl Module for MissionEnhancer {
             crimestat: CrimestatTagMode::from_str(
                 ctx.config.get_str("crimestat_tag").unwrap_or("colored"),
             ),
+            owned: owned_title,
         };
         let desc_opts = DescOptions {
             blueprint_list: ctx.config.get_bool("blueprint_list").unwrap_or(true),
@@ -186,6 +225,7 @@ impl Module for MissionEnhancer {
             ship_encounters: ctx.config.get_bool("ship_encounters").unwrap_or(true),
             cargo_info: ctx.config.get_bool("cargo_info").unwrap_or(true),
             region_info: ctx.config.get_bool("region_info").unwrap_or(true),
+            owned_mode,
             // One-shot patch run — fallback diagnostics surface useful
             // outliers in stderr exactly once.
             diagnostics: true,
@@ -239,7 +279,11 @@ impl Module for MissionEnhancer {
                 continue;
             }
             let facts = PoolFacts::build(&index, ids, db, &index.localities, locale);
-            let tags = title::render(&facts, title_opts);
+            // Owned-complete (exhausted) check, only when the set is loaded.
+            let owned_complete = owned_set.as_ref().is_some_and(|set| {
+                owned::all_owned(&owned::pool_reward_guids(&facts.members, &index), set)
+            });
+            let tags = title::render(&facts, title_opts, owned_complete);
             if tags.is_empty() {
                 continue;
             }
@@ -264,6 +308,7 @@ impl Module for MissionEnhancer {
                 &manufacturer_prefixes,
                 key,
                 desc_opts,
+                owned_set.as_ref(),
             );
             if suffix.is_empty() {
                 continue;

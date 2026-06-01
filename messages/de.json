@@ -120,6 +120,13 @@
   "option_mission_enhancer_cargo_info_description": "Zeigt Fracht-Hinweise (Full/Half/Scraps, HighValue/LowValue) bei feindlichen Schiffen",
   "option_mission_enhancer_region_info_label": "Regions-Info",
   "option_mission_enhancer_region_info_description": "Hängt die Region oder den Himmelskörper an, in der die Mission angeboten wird",
+  "option_mission_enhancer_owned_blueprints_label": "Besessene Blueprints",
+  "option_mission_enhancer_owned_blueprints_description": "Nutzt Hearths Export besessener Blueprints, um in der Beschreibungsliste bereits besessene Blueprints zu markieren (✓) oder auszublenden",
+  "choice_mission_enhancer_owned_blueprints_off_label": "Aus",
+  "choice_mission_enhancer_owned_blueprints_mark_label": "Besessene markieren (✓)",
+  "choice_mission_enhancer_owned_blueprints_hide_label": "Besessene ausblenden",
+  "option_mission_enhancer_owned_title_tag_label": "Titel-Tag bei Vollbesitz",
+  "option_mission_enhancer_owned_title_tag_description": "Fügt [✓] zu Titeln von Missionen hinzu, deren Blueprint-Belohnungen du bereits besitzt (laut Hearth)",
 
   "module_weapon_enhancer_name": "Weapon Enhancer",
   "module_weapon_enhancer_description": "Ergänzt Größen-Präfixe, Lenkmodus von Raketen und Kampfwerte in den Waffenbeschreibungen",

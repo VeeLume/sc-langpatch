@@ -189,6 +189,8 @@ impl PreviewSession {
             &self.manufacturer_prefixes,
             desc_key,
             opts,
+            // Preview doesn't load Hearth ownership; owned features stay inert.
+            None,
         );
         Some(format!("{base}{suffix}"))
     }
@@ -208,7 +210,8 @@ impl PreviewSession {
             &self.index.localities,
             &self.locale,
         );
-        let tags = crate::modules::mission_enhancer::render_title(&facts, opts);
+        // Preview doesn't load Hearth ownership; owned-complete stays false.
+        let tags = crate::modules::mission_enhancer::render_title(&facts, opts, false);
         if tags.is_empty() {
             Some(base.clone())
         } else {

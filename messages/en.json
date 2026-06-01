@@ -120,6 +120,13 @@
   "option_mission_enhancer_cargo_info_description": "Show cargo descriptors (Full/Half/Scraps, HighValue/LowValue) on hostile ships",
   "option_mission_enhancer_region_info_label": "Region Info",
   "option_mission_enhancer_region_info_description": "Append the region / body where the mission is offered",
+  "option_mission_enhancer_owned_blueprints_label": "Owned Blueprints",
+  "option_mission_enhancer_owned_blueprints_description": "Use Hearth's owned-blueprints export to mark (✓) or hide blueprints you already own in the description list",
+  "choice_mission_enhancer_owned_blueprints_off_label": "Off",
+  "choice_mission_enhancer_owned_blueprints_mark_label": "Mark owned (✓)",
+  "choice_mission_enhancer_owned_blueprints_hide_label": "Hide owned",
+  "option_mission_enhancer_owned_title_tag_label": "Owned-Complete Title Tag",
+  "option_mission_enhancer_owned_title_tag_description": "Add [✓] to titles of missions whose blueprint rewards you already own (per Hearth)",
 
   "module_weapon_enhancer_name": "Weapon Enhancer",
   "module_weapon_enhancer_description": "Add size prefixes, missile tracking type, and combat stats to weapon descriptions",

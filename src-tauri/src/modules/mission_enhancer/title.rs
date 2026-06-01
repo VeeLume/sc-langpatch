@@ -6,6 +6,7 @@
 //! to flag "behavior varies — see description."
 
 use super::crimestat::CrimestatRisk;
+use super::owned::OWNED_MARK;
 use super::pool::{BlueprintState, CrimestatState, PoolFacts, TriState};
 use crate::formatter_helpers::{apply_color, bracket, Color};
 
@@ -17,6 +18,10 @@ pub struct TitleOptions {
     pub illegal: bool,
     /// Crimestat tag mode — "off" / "simple" / "colored".
     pub crimestat: CrimestatTagMode,
+    /// Append a `[✓]` tag when every reward blueprint is already owned
+    /// (per Hearth's export). The completeness itself is computed by the
+    /// caller and passed to [`render`]; this only gates emission.
+    pub owned: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,7 +43,11 @@ impl CrimestatTagMode {
 
 /// Render the trailing tag string (without leading space). Empty
 /// string when no tags apply.
-pub fn render(facts: &PoolFacts<'_>, opts: TitleOptions) -> String {
+///
+/// `owned_complete` is true when every reward blueprint of this title pool
+/// is owned (computed by the caller, which has the owned set + pool index).
+/// Gated by [`TitleOptions::owned`].
+pub fn render(facts: &PoolFacts<'_>, opts: TitleOptions, owned_complete: bool) -> String {
     let mut tags: Vec<String> = Vec::new();
 
     if opts.blueprint {
@@ -52,6 +61,13 @@ pub fn render(facts: &PoolFacts<'_>, opts: TitleOptions) -> String {
             }
             BlueprintState::None => {}
         }
+    }
+
+    // Owned-complete (exhausted) marker — sits next to the BP tag so the
+    // "grants BP / already have them all" pair reads together. Underlined
+    // so it stands out from plain title text in the contracts panel.
+    if opts.owned && owned_complete {
+        tags.push(apply_color(Color::Underline, bracket(OWNED_MARK)));
     }
 
     if opts.solo

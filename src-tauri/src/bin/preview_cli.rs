@@ -20,7 +20,7 @@
 use std::process::ExitCode;
 
 use sc_langpatch_lib::modules::mission_enhancer::{
-    CrimestatTagMode, DescOptions, TitleOptions,
+    CrimestatTagMode, DescOptions, OwnedMode, TitleOptions,
 };
 use sc_langpatch_lib::preview::{self, PreviewSession};
 
@@ -306,6 +306,8 @@ fn default_title_opts() -> TitleOptions {
         once: true,
         illegal: true,
         crimestat: CrimestatTagMode::from_str("colored"),
+        // Preview doesn't load Hearth ownership.
+        owned: false,
     }
 }
 
@@ -316,6 +318,8 @@ fn default_desc_opts() -> DescOptions {
         ship_encounters: true,
         cargo_info: true,
         region_info: true,
+        // Preview doesn't load Hearth ownership.
+        owned_mode: OwnedMode::Off,
         // CLI keeps stdout clean for piping — diagnostics belong in
         // the patcher run.
         diagnostics: false,

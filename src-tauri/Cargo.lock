@@ -1636,6 +1636,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
+name = "hearth-export"
+version = "0.0.1"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "heck"
 version = "0.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3609,6 +3616,7 @@ dependencies = [
  "dirs",
  "encoding_rs",
  "glob-match",
+ "hearth-export",
  "regex",
  "sc-contracts",
  "sc-extract",

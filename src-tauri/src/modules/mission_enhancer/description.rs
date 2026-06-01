@@ -14,7 +14,10 @@ use sc_contracts::{
 use sc_extract::{LocaleMap, LocalizedItemCache, TagTree};
 use svarog_datacore::DataCoreDatabase;
 
+use std::collections::HashSet;
+
 use super::encounters;
+use super::owned::{OwnedMode, OWNED_MARK};
 use super::pool::{BlueprintState, PoolFacts};
 use super::variants::{self, ResolutionStats, VariantLabel};
 use crate::formatter_helpers::{bullet, header, NEWLINE, PARAGRAPH_BREAK};
@@ -26,6 +29,9 @@ pub struct DescOptions {
     pub ship_encounters: bool,
     pub cargo_info: bool,
     pub region_info: bool,
+    /// How owned blueprints are rendered in the "Potential Blueprints"
+    /// list. The owned set itself is passed separately to [`render`].
+    pub owned_mode: OwnedMode,
     /// Whether to emit per-pool fallback diagnostics to stderr.
     ///
     /// True for the one-shot patcher run (where the lines are useful
@@ -47,6 +53,7 @@ pub fn render(
     manufacturer_prefixes: &[String],
     desc_key: &str,
     opts: DescOptions,
+    owned: Option<&HashSet<String>>,
 ) -> String {
     let head = match facts.members.first() {
         Some(m) => *m,
@@ -66,7 +73,7 @@ pub fn render(
     let mut blocks: Vec<String> = Vec::new();
 
     if !facts.has_variants() {
-        push_singleton_blocks(&mut blocks, head, facts, index, cache, locale, manufacturer_prefixes, opts);
+        push_singleton_blocks(&mut blocks, head, facts, index, cache, locale, manufacturer_prefixes, opts, owned);
     } else {
         let (labels, stats) = variants::resolve(&facts.members, &index.localities, db, locale);
         let groups = group_by_diff_lines(facts, &labels, &index.tag_tree, index, cache, locale, manufacturer_prefixes, opts);
@@ -74,7 +81,7 @@ pub fn render(
             // Functionally one variant — the data-level divergence
             // didn't produce different rendered output. Render as a
             // singleton using the head member's full info.
-            push_singleton_blocks(&mut blocks, head, facts, index, cache, locale, manufacturer_prefixes, opts);
+            push_singleton_blocks(&mut blocks, head, facts, index, cache, locale, manufacturer_prefixes, opts, owned);
         } else {
             push_variants_blocks(
                 &mut blocks,
@@ -88,6 +95,7 @@ pub fn render(
                 manufacturer_prefixes,
                 desc_key,
                 opts,
+                owned,
             );
         }
     }
@@ -109,11 +117,12 @@ fn push_singleton_blocks(
     locale: &LocaleMap,
     manufacturer_prefixes: &[String],
     opts: DescOptions,
+    owned: Option<&HashSet<String>>,
 ) {
     if opts.blueprint_list {
         for bp in &head.rewards.blueprints {
             let pool = index.blueprints.get(&bp.pool_guid);
-            blocks.push(blueprint_block(bp, pool, cache, locale));
+            blocks.push(blueprint_block(bp, pool, cache, locale, opts.owned_mode, owned));
         }
     }
     if opts.mission_info
@@ -155,6 +164,7 @@ fn push_variants_blocks(
     manufacturer_prefixes: &[String],
     desc_key: &str,
     opts: DescOptions,
+    owned: Option<&HashSet<String>>,
 ) {
     // Top section — only the axes that are unanimous across all members.
     if opts.blueprint_list
@@ -165,7 +175,7 @@ fn push_variants_blocks(
         // from the head member's vec.
         for bp in &head.rewards.blueprints {
             let pool = index.blueprints.get(&bp.pool_guid);
-            blocks.push(blueprint_block(bp, pool, cache, locale));
+            blocks.push(blueprint_block(bp, pool, cache, locale, opts.owned_mode, owned));
         }
     }
     if opts.mission_info
@@ -208,6 +218,8 @@ fn blueprint_block(
     pool: Option<&BlueprintPool>,
     cache: &LocalizedItemCache,
     locale: &LocaleMap,
+    owned_mode: OwnedMode,
+    owned: Option<&HashSet<String>>,
 ) -> String {
     let mut s = header("Potential Blueprints");
     if bp.chance < 1.0 {
@@ -218,21 +230,59 @@ fn blueprint_block(
         // surfaces. Should not happen on a clean DCB.
         return s;
     };
-    // Resolve display names, then sort alphabetically (case-insensitive)
-    // for player-readable output. Pool's own order is descending weight
-    // — useful for cross-build comparison but noisy in a help dialog.
-    // Items whose display name we can't resolve are dropped; see
-    // [`crate::BlueprintItem::display_name`] for the resolution
-    // sources.
-    let mut names: Vec<&str> = pool
+
+    // Ownership annotation is active only when both the mode is on and we
+    // actually loaded an owned set (Hearth present). Otherwise `owned_set`
+    // is None and the block renders exactly as before.
+    let owned_set = match (owned_mode, owned) {
+        (OwnedMode::Off, _) | (_, None) => None,
+        (_, Some(set)) => Some(set),
+    };
+
+    // Resolve display names paired with an owned flag, then sort
+    // alphabetically (case-insensitive) for player-readable output. Pool's
+    // own order is descending weight — noisy in a help dialog. Items whose
+    // display name we can't resolve are dropped; see
+    // [`crate::BlueprintItem::display_name`] for the resolution sources.
+    let mut entries: Vec<(&str, bool)> = pool
         .items
         .iter()
-        .filter_map(|item| item.display_name(cache, locale))
+        .filter_map(|item| {
+            let name = item.display_name(cache, locale)?;
+            let is_owned = owned_set
+                .is_some_and(|set| set.contains(&item.blueprint_record_guid.to_string()));
+            Some((name, is_owned))
+        })
         .collect();
-    names.sort_by_key(|n| n.to_lowercase());
-    for name in names {
+    entries.sort_by_key(|(n, _)| n.to_lowercase());
+
+    // Owned-count summary in the header — glyph-independent, so it still
+    // communicates even if the in-game font drops the per-item marker.
+    if owned_set.is_some() {
+        let total = entries.len();
+        let owned_n = entries.iter().filter(|(_, o)| *o).count();
+        if total > 0 && owned_n > 0 {
+            let summary = if owned_n == total {
+                format!(" · all {total} owned")
+            } else {
+                format!(" · {owned_n}/{total} owned")
+            };
+            s.push_str(&summary);
+        }
+    }
+
+    for (name, is_owned) in entries {
+        // Hide mode: drop owned entries (the header count still records them).
+        if is_owned && matches!(owned_mode, OwnedMode::Hide) {
+            continue;
+        }
         s.push_str(NEWLINE);
-        s.push_str(&bullet(name));
+        if is_owned && matches!(owned_mode, OwnedMode::Mark) {
+            // Owned bullet uses the mark glyph in place of the dash.
+            s.push_str(&format!("{OWNED_MARK} {name}"));
+        } else {
+            s.push_str(&bullet(name));
+        }
     }
     s
 }
