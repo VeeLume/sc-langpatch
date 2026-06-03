@@ -168,13 +168,17 @@ impl Module for MissionEnhancer {
             ModuleOption {
                 id: "owned_blueprints".into(),
                 label: "Owned Blueprints".into(),
-                description:
-                    "Use Hearth's owned-blueprints export to mark (✓) or hide blueprints you already own in the description list"
-                        .into(),
+                description: format!(
+                    "Use Hearth's owned-blueprints export to mark ({m}) or hide blueprints you already own in the description list",
+                    m = owned::OWNED_MARK
+                ),
                 kind: OptionKind::Choice {
                     choices: vec![
                         ChoiceOption { value: "off".into(), label: "Off".into() },
-                        ChoiceOption { value: "mark".into(), label: "Mark owned (✓)".into() },
+                        ChoiceOption {
+                            value: "mark".into(),
+                            label: format!("Mark owned ({})", owned::OWNED_MARK),
+                        },
                         ChoiceOption { value: "hide".into(), label: "Hide owned".into() },
                     ],
                 },
@@ -183,9 +187,10 @@ impl Module for MissionEnhancer {
             ModuleOption {
                 id: "owned_title_tag".into(),
                 label: "Owned-Complete Title Tag".into(),
-                description:
-                    "Add [✓] to titles of missions whose blueprint rewards you already own (per Hearth)"
-                        .into(),
+                description: format!(
+                    "Add [{m}] to titles of missions whose blueprint rewards you already own (per Hearth)",
+                    m = owned::OWNED_MARK
+                ),
                 kind: OptionKind::Bool,
                 default: "true".into(),
             },

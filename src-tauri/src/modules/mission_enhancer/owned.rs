@@ -14,9 +14,11 @@ use std::collections::HashSet;
 use sc_contracts::{Mission, MissionIndex};
 
 /// Marker appended to owned blueprints (description bullets) and to the
-/// owned-complete title tag. Single point of definition so swapping the
-/// glyph (e.g. to `*` if the in-game font drops `✓`) is one edit.
-pub const OWNED_MARK: &str = "✓";
+/// owned-complete title tag. **ASCII only** — the in-game font drops `✓`
+/// (and other non-ASCII glyphs), rendering them as tofu/garbage, so `x`
+/// stands in as the "ticked / done" mark (`[x]` in the title). Single point
+/// of definition so swapping it is one edit.
+pub const OWNED_MARK: &str = "x";
 
 /// How the description's "Potential Blueprints" list treats owned entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
