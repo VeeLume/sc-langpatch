@@ -64,7 +64,7 @@ ureq = { version = "2", default-features = false, features = ["tls"] }
 # Hearth's owned-blueprints export contract (mission_enhancer "Owned
 # Blueprints" feature). Serde-only by design — pulls no sc-holotable, so it
 # doesn't clash with the v0.5.0 pin above; guids match as hex strings.
-hearth-export = { path = "../../hearth/crates/hearth-export" }
+hearth-export = { git = "https://github.com/VeeLume/hearth.git", rev = "9f3ad5906c555b856be7fccd4b2cb1cbe939884c" }
 
 # Interactive preview TUI dep — used only by `src/bin/preview_tui.rs`.
 # Gated behind the `preview_tui` feature so the Tauri release build

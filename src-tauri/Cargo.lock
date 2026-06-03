@@ -1637,7 +1637,8 @@ checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
 
 [[package]]
 name = "hearth-export"
-version = "0.0.1"
+version = "0.1.0"
+source = "git+https://github.com/VeeLume/hearth.git?rev=9f3ad5906c555b856be7fccd4b2cb1cbe939884c#9f3ad5906c555b856be7fccd4b2cb1cbe939884c"
 dependencies = [
  "serde",
 ]
