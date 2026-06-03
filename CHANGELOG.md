@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-03
+
+### Added
+- **Owned Blueprints (Hearth integration).** The Mission Enhancer can now consume Hearth's `owned-blueprints.json` export to factor the blueprints you already own into mission enrichment. Two new options:
+  - `Owned Blueprints` (Off / Mark owned / Hide owned) — the "Potential Blueprints" list gains a `· X/Y owned` header count and either marks owned entries with a `[x]`-style tick or omits them. The count carries the signal independently of the glyph.
+  - `Owned-Complete Title Tag` — appends `[x]` to titles of missions whose blueprint rewards you already own.
+  Matching is by CIG hex GUID, so the pins here and on the Hearth side agree. The owned set loads once per patch run and only when a feature is enabled; with no Hearth export present the set is empty and the feature is inert.
+
+### Changed
+- **Owned-blueprint marker is ASCII (`x`) instead of `✓`.** The in-game font drops non-ASCII glyphs and renders them as tofu, so the "owned/done" mark now uses `x` (e.g. `[x]` in titles). Defined in one place so the glyph stays swappable.
+
 ## [0.4.4] - 2026-05-26
 
 ### Fixed
